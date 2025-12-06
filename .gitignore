@@ -1,0 +1,56 @@
+# =========================
+# GLOBAL
+# =========================
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+.env
+.env.local
+.env.production
+.env.development
+
+# =========================
+# NODE / BACKEND
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+dist/
+build/
+coverage/
+
+# =========================
+# DATABASE
+# =========================
+*.sqlite
+*.db
+
+# =========================
+# RUST / MIDEN
+# =========================
+target/
+**/target/
+Cargo.lock
+
+# =========================
+# MIDEN-SPECIFIC (SAFE DEFAULTS)
+# =========================
+*.masm
+*.air
+
+# =========================
+# IDE / EDITOR
+# =========================
+.vscode/
+.idea/
+*.code-workspace
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db

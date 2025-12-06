@@ -1,0 +1,62 @@
+{
+  "name": "obscura-miden-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Obscura × Miden privacy-preserving real estate marketplace - Real Miden testnet integration",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node test-complete-flow.js",
+    "test:integration": "jest --testPathPattern=tests/integration",
+    "test:miden": "jest --testPathPattern=tests/miden",
+    "lint": "eslint src/",
+    "deploy:testnet": "node scripts/deploy-testnet.js",
+    "miden:sync": "miden-client sync",
+    "miden:accounts": "miden-client account -l",
+    "miden:notes": "miden-client notes -l"
+  },
+  "keywords": [
+    "miden",
+    "polygon",
+    "zero-knowledge",
+    "real-estate",
+    "blockchain",
+    "privacy",
+    "nft"
+  ],
+  "author": "FrameX Corporation",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.0.1",
+    "helmet": "^7.1.0",
+    "ipfs-http-client": "^60.0.1",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.55.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.29.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/framex/obscura-miden-poc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/framex/obscura-miden-poc/issues"
+  }
+}

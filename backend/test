@@ -1,0 +1,2964 @@
+{
+  "role": "user",
+  "content": [
+    "You are now joining an ongoing backend project for a privacy-preserving real-estate marketplace called Obscura × Miden. The system uses Polygon Miden for private property notes, encrypted metadata, ZK proofs, and escrow-based settlement. Below is the complete product spec, folder structure, and ALL backend source files. Continue development from this context.",
+
+    "====================",
+    "PRODUCT SPEC (19 FEATURES)",
+    "====================",
+    "Property Developer (Alice) Actions:",
+    "1. Connect wallet",
+    "2. Upload property metadata, docs → Mint as private Miden note",
+    "3. View encrypted metadata (visible only to owner)",
+    "4. List property with selective disclosure rules",
+    "5. Approve/reject offers",
+    "6. Confirm settlement + transfer ownership",
+
+    "Investor (Bob) Actions:",
+    "7. Connect wallet",
+    "8. Generate ZK accreditation proof client-side",
+    "9. Generate ZK jurisdiction proof",
+    "10. Unlock full property details using proofs",
+    "11. Submit purchase offer",
+    "12. Lock funds into escrow",
+    "13. Confirm settlement + receive ownership",
+
+    "Platform / Verification:",
+    "14. Verify accreditation proof",
+    "15. Verify jurisdiction proof",
+    "16. Verify Alice's ownership proof",
+    "17. Verify compliance before settlement",
+    "18. Execute atomic settlement (funds + property note)",
+
+    "Visibility Layer:",
+    "19. Public proof dashboard with timestamps, without revealing proof contents",
+
+    "We have already successfully minted property notes using Miden. Continue development based on the existing backend.",
+
+
+    "====================",
+    "BACKEND PROJECT TREE",
+    "====================",
+    "backend/src",
+    "│   server.js",
+    "│",
+    "├── controllers",
+    "│     assetController.js",
+    "│     escrowController.js",
+    "│     healthController.js",
+    "│     offerController.js",
+    "│     proofController.js",
+    "│     walletController.js",
+    "│",
+    "├── middleware",
+    "│     errorHandler.js",
+    "│",
+    "├── routes",
+    "│     assetRoutes.js",
+    "│     escrowRoutes.js",
+    "│     healthRoutes.js",
+    "│     offerRoutes.js",
+    "│     proofRoutes.js",
+    "│     walletRoutes.js",
+    "│",
+    "├── services",
+    "│     accountManager.js",
+    "│     ipfsService.js",
+    "│     midenClient.js",
+    "│     midenClient.js.backup",
+    "│     noteManager.js",
+    "│     proofService.js",
+    "│",
+    "└── utils",
+    "      constants.js",
+    "      encryption.js",
+    "      logger.js",
+
+
+    "====================",
+    "ALL BACKEND FILES (FULL CONTENTS)",
+    "====================",
+
+    "-------------------- server.js --------------------",
+    "/**
+ * Obscura × Miden Complete Backend Server
+ * 
+ * Full production server with real Miden integration
+ * 55+ endpoints | Real blockchain | Complete E2E flows
+ */
+
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+
+// Routes
+const assetRoutes = require('./routes/assetRoutes');
+const offerRoutes = require('./routes/offerRoutes');
+const escrowRoutes = require('./routes/escrowRoutes');
+const proofRoutes = require('./routes/proofRoutes');
+const walletRoutes = require('./routes/walletRoutes');
+const healthRoutes = require('./routes/healthRoutes');
+
+// Middleware
+const errorHandler = require('./middleware/errorHandler');
+const logger = require('./utils/logger');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// ============================================================================
+// MIDDLEWARE
+// ============================================================================
+
+// Security headers
+app.use(helmet());
+
+// CORS configuration
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true
+}));
+
+// Body parsing
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+});
+app.use('/api/', limiter);
+
+// Request logging
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.path}`, {
+    ip: req.ip,
+    userAgent: req.get('user-agent')
+  });
+  next();
+});
+
+// ============================================================================
+// API ROUTES
+// ============================================================================
+
+const API_PREFIX = '/api/v1';
+
+// Health & Status
+app.use(`${API_PREFIX}/health`, healthRoutes);
+
+// Assets (Properties)
+app.use(`${API_PREFIX}/assets`, assetRoutes);
+
+// Offers
+app.use(`${API_PREFIX}/offers`, offerRoutes);
+
+// Escrow
+app.use(`${API_PREFIX}/escrow`, escrowRoutes);
+
+// Proofs
+app.use(`${API_PREFIX}/proofs`, proofRoutes);
+
+// Wallet
+app.use(`${API_PREFIX}/wallet`, walletRoutes);
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    name: 'Obscura × Miden API',
+    version: '1.0.0',
+    description: 'Privacy-preserving real estate marketplace on Miden blockchain',
+    status: 'operational',
+    blockchain: 'Miden Testnet',
+    explorer: 'https://testnet.midenscan.com',
+    endpoints: {
+      health: `${API_PREFIX}/health`,
+      assets: `${API_PREFIX}/assets`,
+      offers: `${API_PREFIX}/offers`,
+      escrow: `${API_PREFIX}/escrow`,
+      proofs: `${API_PREFIX}/proofs`,
+      wallet: `${API_PREFIX}/wallet`
+    },
+    documentation: '/docs'
+  });
+});
+
+// API documentation endpoint
+app.get('/docs', (req, res) => {
+  res.json({
+    title: 'Obscura × Miden API Documentation',
+    version: '1.0.0',
+    baseUrl: `http://localhost:${PORT}${API_PREFIX}`,
+    
+    endpoints: {
+      assets: [
+        'POST /assets/mint - Mint new property',
+        'GET /assets - List all properties',
+        'GET /assets/:id - Get property details',
+        'POST /assets/:id/unlock - Unlock with proofs',
+        'GET /assets/owner/:address - Get owner properties',
+        'GET /assets/:id/history - Get property history',
+        'PUT /assets/:id/update - Update property',
+        'DELETE /assets/:id - Delete property',
+        'GET /assets/:id/offers - Get property offers',
+        'GET /assets/:id/metadata - Get metadata',
+        'POST /assets/:id/transfer - Transfer property',
+        'GET /assets/search - Search properties',
+        'GET /assets/featured - Get featured properties',
+        'GET /assets/stats - Get asset statistics',
+        'POST /assets/batch-mint - Batch mint properties'
+      ],
+      
+      offers: [
+        'POST /offers - Create new offer',
+        'GET /offers/:id - Get offer details',
+        'GET /offers/asset/:assetId - Get offers for asset',
+        'PUT /offers/:id/accept - Accept offer',
+        'PUT /offers/:id/reject - Reject offer',
+        'PUT /offers/:id/cancel - Cancel offer',
+        'GET /offers/buyer/:address - Get buyer offers',
+        'GET /offers/seller/:address - Get seller offers',
+        'PUT /offers/:id/update - Update offer',
+        'GET /offers/stats - Get offer statistics',
+        'POST /offers/:id/counter - Counter offer',
+        'GET /offers/pending - Get pending offers'
+      ],
+      
+      escrow: [
+        'POST /escrow/create - Create escrow',
+        'POST /escrow/:id/lock-funds - Lock buyer funds',
+        'POST /escrow/:id/verify-compliance - Verify proofs',
+        'POST /escrow/:id/execute - Execute settlement',
+        'GET /escrow/:id - Get escrow details',
+        'GET /escrow/offer/:offerId - Get escrow by offer',
+        'POST /escrow/:id/refund - Refund escrow',
+        'GET /escrow/buyer/:address - Get buyer escrows',
+        'GET /escrow/seller/:address - Get seller escrows',
+        'GET /escrow/stats - Get escrow statistics',
+        'PUT /escrow/:id/update-deadline - Update deadline',
+        'GET /escrow/pending - Get pending escrows',
+        'GET /escrow/completed - Get completed escrows'
+      ],
+      
+      proofs: [
+        'POST /proofs/ownership - Generate ownership proof',
+        'POST /proofs/accreditation - Generate accreditation proof',
+        'POST /proofs/jurisdiction - Generate jurisdiction proof',
+        'POST /proofs/verify - Verify single proof',
+        'POST /proofs/batch-verify - Verify multiple proofs',
+        'GET /proofs/:id - Get proof details',
+        'GET /proofs/user/:userId - Get user proofs',
+        'DELETE /proofs/:id - Delete proof'
+      ],
+      
+      wallet: [
+        'POST /wallet/create - Create Miden account',
+        'GET /wallet/:address - Get wallet details',
+        'GET /wallet/:address/balance - Get balance',
+        'POST /wallet/sync - Sync with Miden testnet'
+      ],
+      
+      health: [
+        'GET /health - Overall health check',
+        'GET /health/miden - Miden client status',
+        'GET /health/ipfs - IPFS status'
+      ]
+    }
+  });
+});
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found',
+    path: req.path,
+    method: req.method
+  });
+});
+
+// Global error handler
+app.use(errorHandler);
+
+// ============================================================================
+// SERVER STARTUP
+// ============================================================================
+
+const server = app.listen(PORT, async () => {
+  logger.info(`🚀 Obscura × Miden Backend Server Started`);
+  logger.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`🌐 Port: ${PORT}`);
+  logger.info(`🔗 Miden RPC: ${process.env.MIDEN_RPC_URL}`);
+  logger.info(`📁 API Prefix: ${API_PREFIX}`);
+  logger.info(`🔐 CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
+  
+  // Initialize Miden client
+  try {
+    const midenClient = require('./services/midenClient');
+    await midenClient.sync();
+    logger.info('✅ Miden client synchronized with testnet');
+  } catch (error) {
+    logger.warn('⚠️  Miden client not available, using simulation mode');
+    logger.warn(`Error: ${error.message}`);
+  }
+  
+  logger.info('');
+  logger.info('📚 API Documentation: http://localhost:' + PORT + '/docs');
+  logger.info('🏥 Health Check: http://localhost:' + PORT + API_PREFIX + '/health');
+  logger.info('');
+  logger.info('✅ Server ready to accept requests!');
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+module.exports = app;
+",
+
+    "-------------------- controllers/assetController.js --------------------",
+    "/**
+ * Asset Controller - Property Management Logic
+ * Handles all property-related operations with real Miden integration
+ */
+
+const midenClient = require('../services/midenClient');
+const ipfsService = require('../services/ipfsService');
+const noteManager = require('../services/noteManager');
+const logger = require('../utils/logger');
+
+// In-memory storage (replace with database in production)
+const assets = new Map();
+const assetHistory = new Map();
+
+/**
+ * Mint new property as Miden note
+ */
+exports.mintAsset = async (req, res, next) => {
+  try {
+    const { title, description, location, price, propertyType, ownerAddress } = req.body;
+    const files = req.files || [];
+
+    logger.info('Minting new property', { title, ownerAddress });
+
+    // Validate input
+    if (!title || !location || !price || !ownerAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: title, location, price, ownerAddress'
+      });
+    }
+
+    // Prepare property metadata
+    const metadata = {
+      title,
+      description,
+      location,
+      price,
+      propertyType: propertyType || 'residential',
+      images: files.map(f => ({ name: f.originalname, size: f.size })),
+      createdAt: new Date().toISOString()
+    };
+
+    // Encrypt and upload to IPFS
+    const ipfsCid = await ipfsService.uploadEncrypted(metadata);
+    logger.info('Metadata uploaded to IPFS', { ipfsCid });
+
+    // Create property note on Miden
+    const propertyData = {
+      id: `property_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      ipfsCid,
+      type: propertyType || 'residential',
+      price: parseInt(price)
+    };
+
+    const { noteId, commitment } = await noteManager.createPropertyNote(
+      propertyData,
+      ownerAddress
+    );
+
+    // Store in database
+    const asset = {
+      id: propertyData.id,
+      noteId,
+      commitment,
+      ipfsCid,
+      owner: ownerAddress,
+      title,
+      location: location.city || location,
+      price,
+      propertyType: propertyType || 'residential',
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      publicData: { title, location: location.city || location, price }
+    };
+
+    assets.set(asset.id, asset);
+    
+    // Initialize history
+    assetHistory.set(asset.id, [{
+      action: 'minted',
+      timestamp: new Date().toISOString(),
+      by: ownerAddress,
+      noteId
+    }]);
+
+    logger.info('Property minted successfully', { assetId: asset.id, noteId });
+
+    res.status(201).json({
+      success: true,
+      asset: {
+        id: asset.id,
+        noteId,
+        commitment,
+        ipfsCid,
+        explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${noteId}`,
+        publicData: asset.publicData
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error minting asset', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * List all properties
+ */
+exports.listAssets = async (req, res, next) => {
+  try {
+    const { status, propertyType, minPrice, maxPrice, location, limit = 50, offset = 0 } = req.query;
+
+    let assetList = Array.from(assets.values());
+
+    // Apply filters
+    if (status) assetList = assetList.filter(a => a.status === status);
+    if (propertyType) assetList = assetList.filter(a => a.propertyType === propertyType);
+    if (minPrice) assetList = assetList.filter(a => a.price >= parseInt(minPrice));
+    if (maxPrice) assetList = assetList.filter(a => a.price <= parseInt(maxPrice));
+    if (location) assetList = assetList.filter(a => a.location.toLowerCase().includes(location.toLowerCase()));
+
+    // Pagination
+    const total = assetList.length;
+    const paginatedAssets = assetList.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+
+    res.json({
+      success: true,
+      assets: paginatedAssets.map(a => ({ ...a.publicData, id: a.id, noteId: a.noteId })),
+      pagination: {
+        total,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        hasMore: parseInt(offset) + parseInt(limit) < total
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error listing assets', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Get property details
+ */
+exports.getAsset = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const asset = assets.get(id);
+
+    if (!asset) {
+      return res.status(404).json({
+        success: false,
+        error: 'Asset not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      asset: {
+        ...asset.publicData,
+        id: asset.id,
+        noteId: asset.noteId,
+        status: asset.status,
+        createdAt: asset.createdAt,
+        explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${asset.noteId}`
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error getting asset', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Unlock full details with proofs
+ */
+exports.unlockAssetDetails = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { proofs } = req.body;
+
+    const asset = assets.get(id);
+    if (!asset) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    // Verify proofs
+    const proofService = require('../services/proofService');
+    const verified = await proofService.verifyProofs(proofs);
+
+    if (!verified) {
+      return res.status(403).json({
+        success: false,
+        error: 'Invalid proofs - cannot unlock details'
+      });
+    }
+
+    // Decrypt metadata from IPFS
+    const metadata = await ipfsService.downloadDecrypted(asset.ipfsCid);
+
+    res.json({
+      success: true,
+      asset: {
+        ...asset,
+        metadata,
+        unlocked: true
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error unlocking asset', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Get owner properties
+ */
+exports.getOwnerAssets = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    const ownerAssets = Array.from(assets.values()).filter(a => a.owner === address);
+
+    res.json({
+      success: true,
+      assets: ownerAssets,
+      count: ownerAssets.length
+    });
+
+  } catch (error) {
+    logger.error('Error getting owner assets', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Get asset history
+ */
+exports.getAssetHistory = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const history = assetHistory.get(id) || [];
+
+    res.json({
+      success: true,
+      history
+    });
+
+  } catch (error) {
+    logger.error('Error getting asset history', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Update property
+ */
+exports.updateAsset = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    const asset = assets.get(id);
+    if (!asset) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    // Update allowed fields
+    if (updates.title) asset.title = updates.title;
+    if (updates.description) asset.description = updates.description;
+    if (updates.price) asset.price = updates.price;
+
+    assets.set(id, asset);
+
+    // Add to history
+    const history = assetHistory.get(id) || [];
+    history.push({
+      action: 'updated',
+      timestamp: new Date().toISOString(),
+      updates
+    });
+    assetHistory.set(id, history);
+
+    res.json({
+      success: true,
+      asset
+    });
+
+  } catch (error) {
+    logger.error('Error updating asset', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Delete asset
+ */
+exports.deleteAsset = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!assets.has(id)) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    assets.delete(id);
+    assetHistory.delete(id);
+
+    res.json({
+      success: true,
+      message: 'Asset deleted successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error deleting asset', { error: error.message });
+    next(error);
+  }
+};
+
+/**
+ * Get asset offers
+ */
+exports.getAssetOffers = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // This would query offers for this asset
+    // Placeholder for now
+    res.json({
+      success: true,
+      offers: []
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get metadata
+ */
+exports.getMetadata = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const asset = assets.get(id);
+
+    if (!asset) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    res.json({
+      success: true,
+      ipfsCid: asset.ipfsCid
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Transfer asset
+ */
+exports.transferAsset = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { toAddress } = req.body;
+
+    const asset = assets.get(id);
+    if (!asset) {
+      return res.status(404).json({ success: false, error: 'Asset not found' });
+    }
+
+    // Update owner
+    asset.owner = toAddress;
+    assets.set(id, asset);
+
+    // Add to history
+    const history = assetHistory.get(id) || [];
+    history.push({
+      action: 'transferred',
+      timestamp: new Date().toISOString(),
+      from: asset.owner,
+      to: toAddress
+    });
+    assetHistory.set(id, history);
+
+    res.json({
+      success: true,
+      asset
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Search assets
+ */
+exports.searchAssets = async (req, res, next) => {
+  try {
+    const { q } = req.query;
+    const assetList = Array.from(assets.values());
+
+    const results = assetList.filter(a =>
+      a.title.toLowerCase().includes(q.toLowerCase()) ||
+      a.location.toLowerCase().includes(q.toLowerCase())
+    );
+
+    res.json({
+      success: true,
+      results,
+      count: results.length
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get featured assets
+ */
+exports.getFeaturedAssets = async (req, res, next) => {
+  try {
+    const assetList = Array.from(assets.values()).slice(0, 10);
+
+    res.json({
+      success: true,
+      assets: assetList
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get asset stats
+ */
+exports.getAssetStats = async (req, res, next) => {
+  try {
+    const assetList = Array.from(assets.values());
+
+    res.json({
+      success: true,
+      stats: {
+        total: assetList.length,
+        active: assetList.filter(a => a.status === 'active').length,
+        sold: assetList.filter(a => a.status === 'sold').length,
+        avgPrice: assetList.reduce((sum, a) => sum + a.price, 0) / assetList.length || 0
+      }
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Batch mint assets
+ */
+exports.batchMintAssets = async (req, res, next) => {
+  try {
+    const { properties } = req.body;
+    const results = [];
+
+    for (const property of properties) {
+      req.body = property;
+      await exports.mintAsset(req, { json: (data) => results.push(data) }, next);
+    }
+
+    res.json({
+      success: true,
+      results,
+      count: results.length
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+",
+
+    "-------------------- controllers/escrowController.js --------------------",
+    "const midenClient = require('../services/midenClient');
+const logger = require('../utils/logger');
+const escrows = new Map();
+
+exports.createEscrow = async (req, res, next) => {
+  try {
+    const { sellerAccountId, buyerAccountId, propertyNoteId, amount, deadline } = req.body;
+    const { escrowAccountId } = await midenClient.createEscrow(sellerAccountId, buyerAccountId, propertyNoteId, amount, deadline);
+    const escrow = { id: escrowAccountId, sellerAccountId, buyerAccountId, propertyNoteId, amount, deadline, status: 'pending', createdAt: new Date().toISOString() };
+    escrows.set(escrowAccountId, escrow);
+    res.status(201).json({ success: true, escrow, explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/account/${escrowAccountId}` });
+  } catch (error) { logger.error('Error creating escrow', { error: error.message }); next(error); }
+};
+
+exports.lockFunds = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    escrow.status = 'locked';
+    escrow.lockedAt = new Date().toISOString();
+    escrows.set(id, escrow);
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.verifyCompliance = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { proofs } = req.body;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    escrow.proofsVerified = true;
+    escrow.verifiedAt = new Date().toISOString();
+    escrows.set(id, escrow);
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.executeSettlement = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    const result = await midenClient.executeEscrowSettlement(id, escrow.propertyNoteId);
+    escrow.status = 'executed';
+    escrow.executedAt = new Date().toISOString();
+    escrows.set(id, escrow);
+    res.json({ success: true, escrow, txId: result.txId, explorerUrl: result.explorerUrl });
+  } catch (error) { next(error); }
+};
+
+exports.getEscrow = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.getEscrowByOffer = async (req, res, next) => {
+  try {
+    const { offerId } = req.params;
+    const escrow = Array.from(escrows.values()).find(e => e.offerId === offerId);
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.refundEscrow = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    escrow.status = 'refunded';
+    escrow.refundedAt = new Date().toISOString();
+    escrow.refundReason = reason;
+    escrows.set(id, escrow);
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.getBuyerEscrows = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    const buyerEscrows = Array.from(escrows.values()).filter(e => e.buyerAccountId === address);
+    res.json({ success: true, escrows: buyerEscrows, count: buyerEscrows.length });
+  } catch (error) { next(error); }
+};
+
+exports.getSellerEscrows = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    const sellerEscrows = Array.from(escrows.values()).filter(e => e.sellerAccountId === address);
+    res.json({ success: true, escrows: sellerEscrows, count: sellerEscrows.length });
+  } catch (error) { next(error); }
+};
+
+exports.getEscrowStats = async (req, res, next) => {
+  try {
+    const allEscrows = Array.from(escrows.values());
+    res.json({ success: true, stats: { total: allEscrows.length, pending: allEscrows.filter(e => e.status === 'pending').length, locked: allEscrows.filter(e => e.status === 'locked').length, executed: allEscrows.filter(e => e.status === 'executed').length, refunded: allEscrows.filter(e => e.status === 'refunded').length } });
+  } catch (error) { next(error); }
+};
+
+exports.updateDeadline = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { deadline } = req.body;
+    const escrow = escrows.get(id);
+    if (!escrow) return res.status(404).json({ success: false, error: 'Escrow not found' });
+    escrow.deadline = deadline;
+    escrows.set(id, escrow);
+    res.json({ success: true, escrow });
+  } catch (error) { next(error); }
+};
+
+exports.getPendingEscrows = async (req, res, next) => {
+  try {
+    const pending = Array.from(escrows.values()).filter(e => e.status === 'pending');
+    res.json({ success: true, escrows: pending, count: pending.length });
+  } catch (error) { next(error); }
+};
+
+exports.getCompletedEscrows = async (req, res, next) => {
+  try {
+    const completed = Array.from(escrows.values()).filter(e => e.status === 'executed');
+    res.json({ success: true, escrows: completed, count: completed.length });
+  } catch (error) { next(error); }
+};
+
+module.exports = exports;
+",
+
+    "-------------------- controllers/healthController.js --------------------",
+    "const midenClient = require('../services/midenClient');
+const logger = require('../utils/logger');
+
+exports.healthCheck = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      uptime: process.uptime(),
+      message: 'OK',
+      timestamp: Date.now(),
+      environment: process.env.NODE_ENV || 'development',
+      services: {
+        api: 'operational',
+        miden: 'configured',
+        ipfs: 'configured'
+      }
+    });
+  } catch (error) { next(error); }
+};
+
+exports.midenStatus = async (req, res, next) => {
+  try {
+    const status = await midenClient.healthCheck();
+    res.json({ success: true, miden: status });
+  } catch (error) { next(error); }
+};
+
+exports.ipfsStatus = async (req, res, next) => {
+  try {
+    res.json({ success: true, ipfs: { status: 'configured', host: process.env.IPFS_HOST } });
+  } catch (error) { next(error); }
+};
+
+module.exports = exports;
+",
+
+    "-------------------- controllers/offerController.js --------------------",
+    "/**
+ * Offer Controller - Complete offer management with Miden integration
+ */
+
+const logger = require('../utils/logger');
+
+// In-memory storage
+const offers = new Map();
+
+exports.createOffer = async (req, res, next) => {
+  try {
+    const { assetId, buyerAddress, offerPrice, accreditationProof, jurisdictionProof, message } = req.body;
+    
+    const offer = {
+      id: `offer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      assetId,
+      buyerAddress,
+      offerPrice: parseInt(offerPrice),
+      accreditationProof,
+      jurisdictionProof,
+      message,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
+    
+    offers.set(offer.id, offer);
+    logger.info('Offer created', { offerId: offer.id });
+    
+    res.status(201).json({ success: true, offer });
+  } catch (error) {
+    logger.error('Error creating offer', { error: error.message });
+    next(error);
+  }
+};
+
+exports.getOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const offer = offers.get(id);
+    
+    if (!offer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    res.json({ success: true, offer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAssetOffers = async (req, res, next) => {
+  try {
+    const { assetId } = req.params;
+    const assetOffers = Array.from(offers.values()).filter(o => o.assetId === assetId);
+    
+    res.json({ success: true, offers: assetOffers, count: assetOffers.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.acceptOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const offer = offers.get(id);
+    
+    if (!offer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    offer.status = 'accepted';
+    offer.acceptedAt = new Date().toISOString();
+    offers.set(id, offer);
+    
+    logger.info('Offer accepted', { offerId: id });
+    res.json({ success: true, offer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.rejectOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const offer = offers.get(id);
+    
+    if (!offer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    offer.status = 'rejected';
+    offer.rejectedAt = new Date().toISOString();
+    offer.rejectionReason = reason;
+    offers.set(id, offer);
+    
+    logger.info('Offer rejected', { offerId: id, reason });
+    res.json({ success: true, offer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.cancelOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const offer = offers.get(id);
+    
+    if (!offer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    offer.status = 'cancelled';
+    offer.cancelledAt = new Date().toISOString();
+    offers.set(id, offer);
+    
+    logger.info('Offer cancelled', { offerId: id });
+    res.json({ success: true, offer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getBuyerOffers = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    const buyerOffers = Array.from(offers.values()).filter(o => o.buyerAddress === address);
+    
+    res.json({ success: true, offers: buyerOffers, count: buyerOffers.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getSellerOffers = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    // Would filter by seller address from asset
+    const sellerOffers = Array.from(offers.values());
+    
+    res.json({ success: true, offers: sellerOffers, count: sellerOffers.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    const offer = offers.get(id);
+    
+    if (!offer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    Object.assign(offer, updates);
+    offers.set(id, offer);
+    
+    res.json({ success: true, offer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getOfferStats = async (req, res, next) => {
+  try {
+    const allOffers = Array.from(offers.values());
+    
+    res.json({
+      success: true,
+      stats: {
+        total: allOffers.length,
+        pending: allOffers.filter(o => o.status === 'pending').length,
+        accepted: allOffers.filter(o => o.status === 'accepted').length,
+        rejected: allOffers.filter(o => o.status === 'rejected').length,
+        cancelled: allOffers.filter(o => o.status === 'cancelled').length
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.counterOffer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { counterPrice } = req.body;
+    const originalOffer = offers.get(id);
+    
+    if (!originalOffer) {
+      return res.status(404).json({ success: false, error: 'Offer not found' });
+    }
+    
+    const counterOffer = {
+      ...originalOffer,
+      id: `offer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      offerPrice: parseInt(counterPrice),
+      isCounter: true,
+      originalOfferId: id,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
+    
+    offers.set(counterOffer.id, counterOffer);
+    
+    res.status(201).json({ success: true, offer: counterOffer });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPendingOffers = async (req, res, next) => {
+  try {
+    const pendingOffers = Array.from(offers.values()).filter(o => o.status === 'pending');
+    
+    res.json({ success: true, offers: pendingOffers, count: pendingOffers.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = exports;
+",
+
+    "-------------------- controllers/proofController.js --------------------",
+    "const proofService = require('../services/proofService');
+const logger = require('../utils/logger');
+const proofs = new Map();
+
+exports.generateOwnershipProof = async (req, res, next) => {
+  try {
+    const { assetId, ownerAddress } = req.body;
+    const proof = await proofService.generateOwnershipProof({ assetId, ownerAddress });
+    const proofData = { id: `proof_${Date.now()}`, type: 'ownership', proof, assetId, ownerAddress, createdAt: new Date().toISOString() };
+    proofs.set(proofData.id, proofData);
+    res.status(201).json({ success: true, proof: proofData });
+  } catch (error) { logger.error('Error generating ownership proof', { error: error.message }); next(error); }
+};
+
+exports.generateAccreditationProof = async (req, res, next) => {
+  try {
+    const { investorData } = req.body;
+    const proof = await proofService.generateAccreditationProof(investorData);
+    const proofData = { id: `proof_${Date.now()}`, type: 'accreditation', proof, createdAt: new Date().toISOString() };
+    proofs.set(proofData.id, proofData);
+    res.status(201).json({ success: true, proof: proofData });
+  } catch (error) { next(error); }
+};
+
+exports.generateJurisdictionProof = async (req, res, next) => {
+  try {
+    const { location } = req.body;
+    const proof = await proofService.generateJurisdictionProof(location);
+    const proofData = { id: `proof_${Date.now()}`, type: 'jurisdiction', proof, location, createdAt: new Date().toISOString() };
+    proofs.set(proofData.id, proofData);
+    res.status(201).json({ success: true, proof: proofData });
+  } catch (error) { next(error); }
+};
+
+exports.verifyProof = async (req, res, next) => {
+  try {
+    const { proof } = req.body;
+    const verified = await proofService.verifyProof(proof);
+    res.json({ success: true, verified });
+  } catch (error) { next(error); }
+};
+
+exports.batchVerifyProofs = async (req, res, next) => {
+  try {
+    const { proofs: proofsToVerify } = req.body;
+    const verified = await proofService.verifyProofs(proofsToVerify);
+    res.json({ success: true, verified, count: proofsToVerify.length });
+  } catch (error) { next(error); }
+};
+
+exports.getProof = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const proof = proofs.get(id);
+    if (!proof) return res.status(404).json({ success: false, error: 'Proof not found' });
+    res.json({ success: true, proof });
+  } catch (error) { next(error); }
+};
+
+exports.getUserProofs = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const userProofs = Array.from(proofs.values()).filter(p => p.ownerAddress === userId);
+    res.json({ success: true, proofs: userProofs, count: userProofs.length });
+  } catch (error) { next(error); }
+};
+
+exports.deleteProof = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    proofs.delete(id);
+    res.json({ success: true, message: 'Proof deleted' });
+  } catch (error) { next(error); }
+};
+
+module.exports = exports;
+",
+
+    "-------------------- controllers/walletController.js --------------------",
+    "const midenClient = require('../services/midenClient');
+const logger = require('../utils/logger');
+
+exports.createWallet = async (req, res, next) => {
+  try {
+    const { accountType = 'regular', storageMode = 'onchain' } = req.body;
+    const result = await midenClient.createAccount(accountType, storageMode);
+    logger.info('Wallet created', { accountId: result.accountId });
+    res.status(201).json({ success: true, accountId: result.accountId, explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/account/${result.accountId}` });
+  } catch (error) { logger.error('Error creating wallet', { error: error.message }); next(error); }
+};
+
+exports.getWallet = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    res.json({ success: true, wallet: { address, network: 'Miden Testnet' } });
+  } catch (error) { next(error); }
+};
+
+exports.getBalance = async (req, res, next) => {
+  try {
+    const { address } = req.params;
+    const { balance } = await midenClient.getAccountBalance(address);
+    res.json({ success: true, balance, address });
+  } catch (error) { next(error); }
+};
+
+exports.syncWallet = async (req, res, next) => {
+  try {
+    await midenClient.sync();
+    res.json({ success: true, message: 'Wallet synced with Miden testnet' });
+  } catch (error) { next(error); }
+};
+
+module.exports = exports;
+",
+
+
+    "-------------------- routes/assetRoutes.js --------------------",
+    "/**
+ * Asset Routes - Property Management
+ * 15 endpoints for complete property lifecycle
+ */
+
+const express = require('express');
+const router = express.Router();
+const assetController = require('../controllers/assetController');
+const multer = require('multer');
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only images and PDF files allowed'), false);
+    }
+  }
+});
+
+/**
+ * @route   POST /api/v1/assets/mint
+ * @desc    Mint new property as Miden note
+ * @access  Public
+ */
+router.post('/mint', upload.array('files', 10), assetController.mintAsset);
+
+/**
+ * @route   GET /api/v1/assets
+ * @desc    List all properties with filters
+ * @access  Public
+ */
+router.get('/', assetController.listAssets);
+
+/**
+ * @route   GET /api/v1/assets/:id
+ * @desc    Get property details (selective disclosure)
+ * @access  Public
+ */
+router.get('/:id', assetController.getAsset);
+
+/**
+ * @route   POST /api/v1/assets/:id/unlock
+ * @desc    Unlock full details with valid proofs
+ * @access  Public
+ */
+router.post('/:id/unlock', assetController.unlockAssetDetails);
+
+/**
+ * @route   GET /api/v1/assets/owner/:address
+ * @desc    Get all properties owned by address
+ * @access  Public
+ */
+router.get('/owner/:address', assetController.getOwnerAssets);
+
+/**
+ * @route   GET /api/v1/assets/:id/history
+ * @desc    Get property transaction history
+ * @access  Public
+ */
+router.get('/:id/history', assetController.getAssetHistory);
+
+/**
+ * @route   PUT /api/v1/assets/:id/update
+ * @desc    Update property metadata
+ * @access  Owner only
+ */
+router.put('/:id/update', assetController.updateAsset);
+
+/**
+ * @route   DELETE /api/v1/assets/:id
+ * @desc    Delete/burn property note
+ * @access  Owner only
+ */
+router.delete('/:id', assetController.deleteAsset);
+
+/**
+ * @route   GET /api/v1/assets/:id/offers
+ * @desc    Get all offers for a property
+ * @access  Public
+ */
+router.get('/:id/offers', assetController.getAssetOffers);
+
+/**
+ * @route   GET /api/v1/assets/:id/metadata
+ * @desc    Get encrypted metadata CID
+ * @access  Public
+ */
+router.get('/:id/metadata', assetController.getMetadata);
+
+/**
+ * @route   POST /api/v1/assets/:id/transfer
+ * @desc    Transfer property ownership
+ * @access  Owner only
+ */
+router.post('/:id/transfer', assetController.transferAsset);
+
+/**
+ * @route   GET /api/v1/assets/search
+ * @desc    Search properties by criteria
+ * @access  Public
+ */
+router.get('/search', assetController.searchAssets);
+
+/**
+ * @route   GET /api/v1/assets/featured
+ * @desc    Get featured properties
+ * @access  Public
+ */
+router.get('/featured', assetController.getFeaturedAssets);
+
+/**
+ * @route   GET /api/v1/assets/stats
+ * @desc    Get asset statistics
+ * @access  Public
+ */
+router.get('/stats', assetController.getAssetStats);
+
+/**
+ * @route   POST /api/v1/assets/batch-mint
+ * @desc    Mint multiple properties at once
+ * @access  Public
+ */
+router.post('/batch-mint', assetController.batchMintAssets);
+
+module.exports = router;
+",
+
+    "-------------------- routes/escrowRoutes.js --------------------",
+    "/**
+ * Escrow Routes - Escrow Management  
+ * 13 endpoints for complete escrow lifecycle
+ */
+
+const express = require('express');
+const router = express.Router();
+const escrowController = require('../controllers/escrowController');
+
+/**
+ * @route   POST /api/v1/escrow/create
+ * @desc    Create escrow account on Miden
+ * @access  Public
+ */
+router.post('/create', escrowController.createEscrow);
+
+/**
+ * @route   POST /api/v1/escrow/:id/lock-funds
+ * @desc    Lock buyer funds in escrow
+ * @access  Buyer only
+ */
+router.post('/:id/lock-funds', escrowController.lockFunds);
+
+/**
+ * @route   POST /api/v1/escrow/:id/verify-compliance
+ * @desc    Verify all compliance proofs
+ * @access  Public
+ */
+router.post('/:id/verify-compliance', escrowController.verifyCompliance);
+
+/**
+ * @route   POST /api/v1/escrow/:id/execute
+ * @desc    Execute settlement (atomic transfer)
+ * @access  Public
+ */
+router.post('/:id/execute', escrowController.executeSettlement);
+
+/**
+ * @route   GET /api/v1/escrow/:id
+ * @desc    Get escrow details
+ * @access  Public
+ */
+router.get('/:id', escrowController.getEscrow);
+
+/**
+ * @route   GET /api/v1/escrow/offer/:offerId
+ * @desc    Get escrow by offer ID
+ * @access  Public
+ */
+router.get('/offer/:offerId', escrowController.getEscrowByOffer);
+
+/**
+ * @route   POST /api/v1/escrow/:id/refund
+ * @desc    Refund escrow to buyer
+ * @access  Public
+ */
+router.post('/:id/refund', escrowController.refundEscrow);
+
+/**
+ * @route   GET /api/v1/escrow/buyer/:address
+ * @desc    Get all escrows for buyer
+ * @access  Public
+ */
+router.get('/buyer/:address', escrowController.getBuyerEscrows);
+
+/**
+ * @route   GET /api/v1/escrow/seller/:address
+ * @desc    Get all escrows for seller
+ * @access  Public
+ */
+router.get('/seller/:address', escrowController.getSellerEscrows);
+
+/**
+ * @route   GET /api/v1/escrow/stats
+ * @desc    Get escrow statistics
+ * @access  Public
+ */
+router.get('/stats', escrowController.getEscrowStats);
+
+/**
+ * @route   PUT /api/v1/escrow/:id/update-deadline
+ * @desc    Update escrow deadline
+ * @access  Seller/Buyer
+ */
+router.put('/:id/update-deadline', escrowController.updateDeadline);
+
+/**
+ * @route   GET /api/v1/escrow/pending
+ * @desc    Get all pending escrows
+ * @access  Public
+ */
+router.get('/pending', escrowController.getPendingEscrows);
+
+/**
+ * @route   GET /api/v1/escrow/completed
+ * @desc    Get all completed escrows
+ * @access  Public
+ */
+router.get('/completed', escrowController.getCompletedEscrows);
+
+module.exports = router;
+",
+
+    "-------------------- routes/healthRoutes.js --------------------",
+    "/**
+ * Health Routes - System Health Checks
+ * 3 endpoints for monitoring system health
+ */
+
+const express = require('express');
+const router = express.Router();
+const healthController = require('../controllers/healthController');
+
+/**
+ * @route   GET /api/v1/health
+ * @desc    Overall system health check
+ * @access  Public
+ */
+router.get('/', healthController.healthCheck);
+
+/**
+ * @route   GET /api/v1/health/miden
+ * @desc    Miden client status
+ * @access  Public
+ */
+router.get('/miden', healthController.midenStatus);
+
+/**
+ * @route   GET /api/v1/health/ipfs
+ * @desc    IPFS connection status
+ * @access  Public
+ */
+router.get('/ipfs', healthController.ipfsStatus);
+
+module.exports = router;
+",
+
+    "-------------------- routes/offerRoutes.js --------------------",
+    "/**
+ * Offer Routes - Offer Management
+ * 12 endpoints for complete offer lifecycle
+ */
+
+const express = require('express');
+const router = express.Router();
+const offerController = require('../controllers/offerController');
+
+/**
+ * @route   POST /api/v1/offers
+ * @desc    Create new offer with proofs
+ * @access  Public
+ */
+router.post('/', offerController.createOffer);
+
+/**
+ * @route   GET /api/v1/offers/:id
+ * @desc    Get offer details
+ * @access  Public
+ */
+router.get('/:id', offerController.getOffer);
+
+/**
+ * @route   GET /api/v1/offers/asset/:assetId
+ * @desc    Get all offers for an asset
+ * @access  Public
+ */
+router.get('/asset/:assetId', offerController.getAssetOffers);
+
+/**
+ * @route   PUT /api/v1/offers/:id/accept
+ * @desc    Accept an offer (seller)
+ * @access  Seller only
+ */
+router.put('/:id/accept', offerController.acceptOffer);
+
+/**
+ * @route   PUT /api/v1/offers/:id/reject
+ * @desc    Reject an offer (seller)
+ * @access  Seller only
+ */
+router.put('/:id/reject', offerController.rejectOffer);
+
+/**
+ * @route   PUT /api/v1/offers/:id/cancel
+ * @desc    Cancel an offer (buyer)
+ * @access  Buyer only
+ */
+router.put('/:id/cancel', offerController.cancelOffer);
+
+/**
+ * @route   GET /api/v1/offers/buyer/:address
+ * @desc    Get all offers made by buyer
+ * @access  Public
+ */
+router.get('/buyer/:address', offerController.getBuyerOffers);
+
+/**
+ * @route   GET /api/v1/offers/seller/:address
+ * @desc    Get all offers received by seller
+ * @access  Public
+ */
+router.get('/seller/:address', offerController.getSellerOffers);
+
+/**
+ * @route   PUT /api/v1/offers/:id/update
+ * @desc    Update offer details
+ * @access  Buyer only
+ */
+router.put('/:id/update', offerController.updateOffer);
+
+/**
+ * @route   GET /api/v1/offers/stats
+ * @desc    Get offer statistics
+ * @access  Public
+ */
+router.get('/stats', offerController.getOfferStats);
+
+/**
+ * @route   POST /api/v1/offers/:id/counter
+ * @desc    Make counter offer
+ * @access  Seller only
+ */
+router.post('/:id/counter', offerController.counterOffer);
+
+/**
+ * @route   GET /api/v1/offers/pending
+ * @desc    Get all pending offers
+ * @access  Public
+ */
+router.get('/pending', offerController.getPendingOffers);
+
+module.exports = router;
+",
+
+    "-------------------- routes/proofRoutes.js --------------------",
+    "/**
+ * Proof Routes - ZK Proof Management
+ * 8 endpoints for proof generation and verification
+ */
+
+const express = require('express');
+const router = express.Router();
+const proofController = require('../controllers/proofController');
+
+/**
+ * @route   POST /api/v1/proofs/ownership
+ * @desc    Generate ownership proof
+ * @access  Public
+ */
+router.post('/ownership', proofController.generateOwnershipProof);
+
+/**
+ * @route   POST /api/v1/proofs/accreditation
+ * @desc    Generate accreditation proof
+ * @access  Public
+ */
+router.post('/accreditation', proofController.generateAccreditationProof);
+
+/**
+ * @route   POST /api/v1/proofs/jurisdiction
+ * @desc    Generate jurisdiction proof
+ * @access  Public
+ */
+router.post('/jurisdiction', proofController.generateJurisdictionProof);
+
+/**
+ * @route   POST /api/v1/proofs/verify
+ * @desc    Verify single proof
+ * @access  Public
+ */
+router.post('/verify', proofController.verifyProof);
+
+/**
+ * @route   POST /api/v1/proofs/batch-verify
+ * @desc    Verify multiple proofs
+ * @access  Public
+ */
+router.post('/batch-verify', proofController.batchVerifyProofs);
+
+/**
+ * @route   GET /api/v1/proofs/:id
+ * @desc    Get proof details
+ * @access  Public
+ */
+router.get('/:id', proofController.getProof);
+
+/**
+ * @route   GET /api/v1/proofs/user/:userId
+ * @desc    Get all proofs for user
+ * @access  Public
+ */
+router.get('/user/:userId', proofController.getUserProofs);
+
+/**
+ * @route   DELETE /api/v1/proofs/:id
+ * @desc    Delete proof
+ * @access  Owner only
+ */
+router.delete('/:id', proofController.deleteProof);
+
+module.exports = router;
+",
+
+    "-------------------- routes/walletRoutes.js --------------------",
+    "/**
+ * Wallet Routes - Miden Wallet Management
+ * 4 endpoints for wallet operations
+ */
+
+const express = require('express');
+const router = express.Router();
+const walletController = require('../controllers/walletController');
+
+/**
+ * @route   POST /api/v1/wallet/create
+ * @desc    Create new Miden account
+ * @access  Public
+ */
+router.post('/create', walletController.createWallet);
+
+/**
+ * @route   GET /api/v1/wallet/:address
+ * @desc    Get wallet details
+ * @access  Public
+ */
+router.get('/:address', walletController.getWallet);
+
+/**
+ * @route   GET /api/v1/wallet/:address/balance
+ * @desc    Get wallet balance
+ * @access  Public
+ */
+router.get('/:address/balance', walletController.getBalance);
+
+/**
+ * @route   POST /api/v1/wallet/sync
+ * @desc    Sync wallet with Miden testnet
+ * @access  Public
+ */
+router.post('/sync', walletController.syncWallet);
+
+module.exports = router;
+",
+
+
+    "-------------------- services/accountManager.js --------------------",
+    "/**
+ * Account Manager - Miden Account Operations
+ */
+const midenClient = require('./midenClient');
+const logger = require('../utils/logger');
+
+class AccountManager {
+  async createAccount(accountType = 'regular') {
+    logger.info('Creating Miden account', { accountType });
+    
+    try {
+      const result = await midenClient.createAccount(accountType);
+      return result;
+    } catch (error) {
+      logger.error('Error creating account', { error: error.message });
+      throw error;
+    }
+  }
+
+  async getAccountDetails(accountId) {
+    logger.info('Getting account details', { accountId });
+    
+    try {
+      const balance = await midenClient.getAccountBalance(accountId);
+      return { accountId, ...balance };
+    } catch (error) {
+      logger.error('Error getting account details', { error: error.message });
+      throw error;
+    }
+  }
+
+  async syncAccount(accountId) {
+    logger.info('Syncing account', { accountId });
+    await midenClient.sync();
+    return { synced: true, timestamp: Date.now() };
+  }
+}
+
+module.exports = new AccountManager();
+",
+
+    "-------------------- services/ipfsService.js --------------------",
+    "/**
+ * IPFS Service - Encrypted metadata storage
+ */
+const CryptoJS = require('crypto-js');
+const logger = require('../utils/logger');
+
+class IPFSService {
+  constructor() {
+    this.encryptionKey = process.env.ENCRYPTION_KEY || 'default-key-change-in-production';
+  }
+
+  async uploadEncrypted(data) {
+    logger.info('Encrypting and uploading to IPFS');
+    
+    // Encrypt data
+    const encrypted = CryptoJS.AES.encrypt(JSON.stringify(data), this.encryptionKey).toString();
+    
+    // Simulate IPFS upload (in production, use real IPFS client)
+    const cid = `Qm${Math.random().toString(36).substr(2, 44)}`;
+    
+    logger.info('Data uploaded to IPFS', { cid });
+    return cid;
+  }
+
+  async downloadDecrypted(cid) {
+    logger.info('Downloading and decrypting from IPFS', { cid });
+    
+    // Simulate IPFS download
+    const encrypted = ''; // Would fetch from IPFS
+    
+    try {
+      const decrypted = CryptoJS.AES.decrypt(encrypted, this.encryptionKey).toString(CryptoJS.enc.Utf8);
+      return JSON.parse(decrypted);
+    } catch (error) {
+      logger.error('Decryption failed', { error: error.message });
+      throw new Error('Failed to decrypt IPFS data');
+    }
+  }
+}
+
+module.exports = new IPFSService();
+",
+
+    "-------------------- services/midenClient.js --------------------",
+    "/**
+ * Miden Client Service - Rust Integration
+ * 
+ * This service interfaces with the Miden Rust Service (Axum + Miden Client)
+ * to interact with Miden testnet.
+ * 
+ * Architecture:
+ * Node.js Backend → Rust Service (localhost:3000) → Miden Testnet
+ * 
+ * Key features:
+ * - Property token minting (fungible tokens representing properties)
+ * - Account management (Alice's wallet + Property faucet)
+ * - Transaction submission and verification
+ * - Real ZK proof generation via Miden client
+ * - Note creation and consumption (UTXO model)
+ */
+
+const axios = require('axios');
+const path = require('path');
+
+class MidenClientService {
+  constructor() {
+    // Rust service configuration
+    this.rustServiceUrl = process.env.MIDEN_RUST_SERVICE_URL || 'http://localhost:3000';
+    this.timeout = 30000; // 30 second timeout for blockchain operations
+    
+    // Initialize axios instance
+    this.client = axios.create({
+      baseURL: this.rustServiceUrl,
+      timeout: this.timeout,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    console.log(`🔗 Miden Client Service initialized (Rust Service: ${this.rustServiceUrl})`);
+  }
+
+  /**
+   * Health check - Verify Rust service is running
+   */
+  async healthCheck() {
+    try {
+      const response = await this.client.get('/health');
+      return {
+        status: 'healthy',
+        connected: true,
+        service: response.data.service,
+        rustService: 'online'
+      };
+    } catch (error) {
+      console.error('Health check failed:', error.message);
+      return {
+        status: 'unhealthy',
+        connected: false,
+        rustService: 'offline',
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get account information (Alice + Faucet accounts)
+   */
+  async getAccountInfo() {
+    try {
+      const response = await this.client.get('/get-account');
+      
+      if (response.data.success) {
+        return {
+          success: true,
+          accounts: response.data.data,
+          aliceAccount: response.data.data.alice_account,
+          faucetAccount: response.data.data.faucet_account
+        };
+      }
+      
+      throw new Error(response.data.error || 'Failed to get account info');
+    } catch (error) {
+      console.error('Get account info failed:', error.message);
+      throw new Error(`Failed to get account info: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create/Mint a property NFT token
+   * @param {object} propertyData - Property details
+   * @param {string} ownerAccountId - Owner's account ID (default: 'alice')
+   * @returns {Promise<object>} Transaction result with tx_id and note_id
+   */
+  async createPropertyToken(propertyData, ownerAccountId = 'alice') {
+    try {
+      console.log('🏗️  Creating property token:', propertyData.id);
+      
+      const payload = {
+        property_id: propertyData.id,
+        owner_account_id: ownerAccountId,
+        ipfs_cid: propertyData.ipfsCid || propertyData.ipfs_cid || '',
+        property_type: this.getPropertyTypeCode(propertyData.type),
+        price: parseInt(propertyData.price) || 0
+      };
+      
+      const response = await this.client.post('/mint-property', payload);
+      
+      if (response.data.success) {
+        console.log('✅ Property token created!');
+        console.log(`   TX: ${response.data.transaction_id}`);
+        console.log(`   Note: ${response.data.note_id}`);
+        
+        return {
+          success: true,
+          transactionId: response.data.transaction_id,
+          noteId: response.data.note_id,
+          propertyId: propertyData.id,
+          explorerUrl: `https://testnet.midenscan.com/tx/${response.data.transaction_id}`
+        };
+      }
+      
+      throw new Error(response.data.error || 'Minting failed');
+    } catch (error) {
+      console.error('Property token creation failed:', error.message);
+      throw new Error(`Failed to create property token: ${error.message}`);
+    }
+  }
+
+  /**
+   * ALIAS: Create property note (backwards compatibility)
+   * @deprecated Use createPropertyToken instead
+   */
+  async createPropertyNote(propertyData, ownerAccountId) {
+    console.warn('⚠️  createPropertyNote is deprecated, use createPropertyToken');
+    return this.createPropertyToken(propertyData, ownerAccountId);
+  }
+
+  /**
+   * Mint multiple properties in batch
+   * @param {Array<object>} properties - Array of property data
+   * @returns {Promise<Array<object>>} Array of transaction results
+   */
+  async batchMintProperties(properties) {
+    try {
+      console.log(`🏗️  Batch minting ${properties.length} properties...`);
+      
+      const results = [];
+      for (const property of properties) {
+        try {
+          const result = await this.createPropertyToken(property);
+          results.push(result);
+          
+          // Small delay between mints to avoid overwhelming the service
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (error) {
+          console.error(`Failed to mint property ${property.id}:`, error.message);
+          results.push({
+            success: false,
+            propertyId: property.id,
+            error: error.message
+          });
+        }
+      }
+      
+      const successCount = results.filter(r => r.success).length;
+      console.log(`✅ Batch mint complete: ${successCount}/${properties.length} successful`);
+      
+      return results;
+    } catch (error) {
+      console.error('Batch mint failed:', error.message);
+      throw new Error(`Batch mint failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get consumable notes for an account
+   * NOTE: This endpoint needs to be implemented in the Rust service
+   * @param {string} accountId - Account ID (optional, defaults to Alice)
+   */
+  async getConsumableNotes(accountId = null) {
+    try {
+      // This will be available once we add the endpoint to the Rust service
+      const response = await this.client.get('/consumable-notes', {
+        params: accountId ? { account_id: accountId } : {}
+      });
+      
+      if (response.data.success) {
+        return {
+          success: true,
+          notes: response.data.notes || []
+        };
+      }
+      
+      throw new Error(response.data.error || 'Failed to get consumable notes');
+    } catch (error) {
+      // If endpoint doesn't exist yet, return graceful error
+      if (error.response?.status === 404) {
+        console.warn('⚠️  Consumable notes endpoint not yet implemented');
+        return {
+          success: false,
+          notes: [],
+          message: 'Endpoint not yet available'
+        };
+      }
+      
+      console.error('Get consumable notes failed:', error.message);
+      throw new Error(`Failed to get consumable notes: ${error.message}`);
+    }
+  }
+
+  /**
+   * Verify a transaction on MidenScan
+   * @param {string} transactionId - Transaction ID (0x...)
+   * @returns {object} Explorer URL and status
+   */
+  async verifyTransaction(transactionId) {
+    try {
+      const explorerUrl = `https://testnet.midenscan.com/tx/${transactionId}`;
+      
+      return {
+        success: true,
+        transactionId,
+        explorerUrl,
+        status: 'submitted',
+        message: 'Transaction submitted to Miden testnet. Check MidenScan for confirmation.'
+      };
+    } catch (error) {
+      console.error('Transaction verification failed:', error.message);
+      throw new Error(`Failed to verify transaction: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get transaction details
+   * @param {string} transactionId - Transaction ID
+   */
+  async getTransactionDetails(transactionId) {
+    try {
+      // For now, return explorer link
+      // In future, could query Miden RPC or local store
+      return {
+        success: true,
+        transactionId,
+        explorerUrl: `https://testnet.midenscan.com/tx/${transactionId}`,
+        status: 'Check MidenScan for full details'
+      };
+    } catch (error) {
+      console.error('Get transaction details failed:', error.message);
+      throw new Error(`Failed to get transaction details: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
+  // LEGACY/DEPRECATED METHODS (for backwards compatibility)
+  // ============================================================================
+
+  /**
+   * @deprecated Rust service handles initialization automatically
+   */
+  async initialize() {
+    console.warn('⚠️  initialize() is deprecated. Rust service initializes automatically.');
+    return { success: true, message: 'Rust service handles initialization' };
+  }
+
+  /**
+   * @deprecated Rust service syncs automatically
+   */
+  async sync() {
+    console.warn('⚠️  sync() is deprecated. Rust service syncs automatically.');
+    return { success: true, message: 'Rust service syncs automatically' };
+  }
+
+  /**
+   * @deprecated Use createPropertyToken instead
+   */
+  async createAccount(accountType, storageMode) {
+    console.warn('⚠️  createAccount() is deprecated. Accounts are managed by Rust service.');
+    return { success: false, message: 'Use Rust service account management' };
+  }
+
+  /**
+   * @deprecated Escrow functionality not yet implemented
+   */
+  async createEscrow(sellerAccountId, buyerAccountId, propertyNoteId, amount, deadline) {
+    console.warn('⚠️  Escrow functionality not yet implemented in Rust service');
+    throw new Error('Escrow functionality coming soon');
+  }
+
+  /**
+   * @deprecated Use createPropertyToken
+   */
+  async submitTransaction(txFilePath) {
+    console.warn('⚠️  submitTransaction() is deprecated. Use createPropertyToken()');
+    throw new Error('Use createPropertyToken() for submitting transactions');
+  }
+
+  // ============================================================================
+  // HELPER METHODS
+  // ============================================================================
+
+  /**
+   * Convert property type string to numeric code
+   * @param {string} type - Property type ('residential', 'commercial', 'land')
+   * @returns {number} Type code (0, 1, 2)
+   */
+  getPropertyTypeCode(type) {
+    const types = {
+      'residential': 0,
+      'commercial': 1,
+      'land': 2
+    };
+    return types[type?.toLowerCase()] || 0;
+  }
+
+  /**
+   * Format property data for minting
+   * @param {object} property - Raw property data
+   * @returns {object} Formatted property data
+   */
+  formatPropertyData(property) {
+    return {
+      id: property.id || property.property_id,
+      ipfsCid: property.ipfsCid || property.ipfs_cid || '',
+      type: property.type || property.property_type || 'residential',
+      price: parseInt(property.price) || 0
+    };
+  }
+
+  /**
+   * Get MidenScan explorer URL for an account
+   * @param {string} accountId - Account ID
+   * @returns {string} Explorer URL
+   */
+  getExplorerAccountUrl(accountId) {
+    return `https://testnet.midenscan.com/account/${accountId}`;
+  }
+
+  /**
+   * Get MidenScan explorer URL for a transaction
+   * @param {string} txId - Transaction ID
+   * @returns {string} Explorer URL
+   */
+  getExplorerTxUrl(txId) {
+    return `https://testnet.midenscan.com/tx/${txId}`;
+  }
+
+  /**
+   * Get MidenScan explorer URL for a note
+   * @param {string} noteId - Note ID
+   * @returns {string} Explorer URL
+   */
+  getExplorerNoteUrl(noteId) {
+    return `https://testnet.midenscan.com/note/${noteId}`;
+  }
+}
+
+// Export singleton instance
+module.exports = new MidenClientService();",
+
+    "-------------------- services/noteManager.js --------------------",
+    "/**
+ * Note Manager - Miden Note Operations
+ */
+const midenClient = require('./midenClient');
+const logger = require('../utils/logger');
+
+class NoteManager {
+  async createPropertyNote(propertyData, ownerAccountId) {
+    logger.info('Creating property note on Miden', { propertyId: propertyData.id });
+    
+    try {
+      const result = await midenClient.createPropertyNote(propertyData, ownerAccountId);
+      
+      return {
+        noteId: result.noteId,
+        commitment: `0x${Math.random().toString(16).substr(2, 64)}`,
+        explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${result.noteId}`
+      };
+    } catch (error) {
+      logger.error('Error creating property note', { error: error.message });
+      throw error;
+    }
+  }
+
+  async consumeNote(noteId, newOwner) {
+    logger.info('Consuming note', { noteId, newOwner });
+    // This would execute a Miden transaction to consume the note
+    return { success: true, txId: `0x${Math.random().toString(16).substr(2, 64)}` };
+  }
+
+  async getNoteDetails(noteId) {
+    logger.info('Getting note details', { noteId });
+    const result = await midenClient.getNoteDetails(noteId);
+    return result;
+  }
+}
+
+module.exports = new NoteManager();
+",
+
+    "-------------------- services/proofService.js --------------------",
+    "/**
+ * Proof Service - Real Miden ZK Proof Generation
+ */
+const midenClient = require('./midenClient');
+const logger = require('../utils/logger');
+
+class ProofService {
+  async generateOwnershipProof(data) {
+    logger.info('Generating ownership proof', { assetId: data.assetId });
+    // In production, this calls real Miden VM
+    const proof = {
+      type: 'ownership',
+      commitment: `0x${Math.random().toString(16).substr(2, 64)}`,
+      timestamp: Date.now(),
+      data: data,
+      verified: false
+    };
+    
+    // Simulate Miden proof generation
+    await new Promise(resolve => setTimeout(resolve, 100));
+    proof.verified = true;
+    
+    return proof;
+  }
+
+  async generateAccreditationProof(investorData) {
+    logger.info('Generating accreditation proof');
+    const proof = {
+      type: 'accreditation',
+      commitment: `0x${Math.random().toString(16).substr(2, 64)}`,
+      timestamp: Date.now(),
+      investorLevel: investorData.level || 'qualified',
+      verified: false
+    };
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    proof.verified = true;
+    
+    return proof;
+  }
+
+  async generateJurisdictionProof(location) {
+    logger.info('Generating jurisdiction proof', { location });
+    const proof = {
+      type: 'jurisdiction',
+      commitment: `0x${Math.random().toString(16).substr(2, 64)}`,
+      timestamp: Date.now(),
+      location: location,
+      verified: false
+    };
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
+    proof.verified = true;
+    
+    return proof;
+  }
+
+  async verifyProof(proof) {
+    logger.info('Verifying proof', { type: proof.type });
+    // In production, this verifies on Miden blockchain
+    return proof.verified === true;
+  }
+
+  async verifyProofs(proofs) {
+    logger.info('Batch verifying proofs', { count: proofs.length });
+    const results = await Promise.all(proofs.map(p => this.verifyProof(p)));
+    return results.every(r => r === true);
+  }
+}
+
+module.exports = new ProofService();
+",
+
+
+    "-------------------- utils/constants.js --------------------",
+    "module.exports = {
+  PROPERTY_TYPES: {
+    RESIDENTIAL: 'residential',
+    COMMERCIAL: 'commercial',
+    LAND: 'land'
+  },
+  OFFER_STATUS: {
+    PENDING: 'pending',
+    ACCEPTED: 'accepted',
+    REJECTED: 'rejected',
+    CANCELLED: 'cancelled'
+  },
+  ESCROW_STATUS: {
+    PENDING: 'pending',
+    LOCKED: 'locked',
+    EXECUTED: 'executed',
+    REFUNDED: 'refunded'
+  }
+};
+",
+
+    "-------------------- utils/encryption.js --------------------",
+    "const CryptoJS = require('crypto-js');
+
+exports.encrypt = (data, key) => {
+  return CryptoJS.AES.encrypt(JSON.stringify(data), key).toString();
+};
+
+exports.decrypt = (encrypted, key) => {
+  const decrypted = CryptoJS.AES.decrypt(encrypted, key).toString(CryptoJS.enc.Utf8);
+  return JSON.parse(decrypted);
+};
+",
+
+    "-------------------- utils/logger.js --------------------",
+    "const winston = require('winston');
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+
+module.exports = logger;
+",
+
+ "====================",
+    "CONTRACTS FOLDER STRUCTURE",
+    "====================",
+    "I also have a contracts folder and attaching the contract files.",
+
+    "contracts/",
+    "├── accounts/",
+    "│     └── escrow.masm",
+    "│",
+    "└── notes/",
+    "      └── property_nft.masm"
+
+    "# escrow.masm
+# 
+# Real Miden Escrow Account Contract
+# This is an actual smart account that runs on Miden blockchain
+#
+# Account Type: Regular account with custom code
+# Purpose: Trustless escrow for real estate transactions
+#
+# Features:
+# - Lock buyer funds on-chain
+# - Verify ZK proofs (ownership + compliance)
+# - Atomic settlement or refund
+# - No trusted third party
+
+use.miden::account
+use.miden::note
+use.miden::tx
+use.std::crypto::hashes::native
+
+# ============================================================================
+# ACCOUNT STORAGE LAYOUT
+# ============================================================================
+# Storage slot 0: Escrow state
+#   - word[0]: escrow_id (unique identifier)
+#   - word[1]: seller_account_id
+#   - word[2]: buyer_account_id  
+#   - word[3]: property_note_id
+#
+# Storage slot 1: Amount and status
+#   - word[0]: locked_amount (in MIDEN tokens)
+#   - word[1]: status (0=pending, 1=locked, 2=executed, 3=refunded)
+#   - word[2]: created_timestamp
+#   - word[3]: deadline_timestamp
+#
+# Storage slot 2: Proof commitments
+#   - word[0]: ownership_proof_commitment
+#   - word[1]: accreditation_proof_commitment
+#   - word[2]: jurisdiction_proof_commitment
+#   - word[3]: reserved
+#
+# Storage slot 3: Verification flags
+#   - word[0]: ownership_verified (0 or 1)
+#   - word[1]: accreditation_verified (0 or 1)
+#   - word[2]: jurisdiction_verified (0 or 1)
+#   - word[3]: funds_locked (0 or 1)
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+const.ESCROW_STATUS_PENDING=0
+const.ESCROW_STATUS_LOCKED=1
+const.ESCROW_STATUS_EXECUTED=2
+const.ESCROW_STATUS_REFUNDED=3
+
+const.STORAGE_SLOT_STATE=0
+const.STORAGE_SLOT_AMOUNT=1
+const.STORAGE_SLOT_PROOFS=2
+const.STORAGE_SLOT_FLAGS=3
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+# Called when escrow account is created
+# Input: [seller_id, buyer_id, property_note_id, amount, deadline]
+export.initialize_escrow
+    # Generate unique escrow ID from inputs
+    dup.4 dup.4 dup.4 dup.4 dup.4
+    # Stack: [seller, buyer, property, amount, deadline, ...]
+    
+    # Hash to create unique ID
+    hmerge hmerge
+    # Stack: [escrow_id_hash, ...]
+    
+    # Store state in slot 0
+    push.STORAGE_SLOT_STATE
+    # Stack: [slot0, escrow_id_hash, seller, buyer, property, ...]
+    
+    # Build storage word for slot 0
+    movup.4 movup.4 movup.4 movup.4
+    # Stack: [escrow_id, seller, buyer, property, slot0, ...]
+    
+    # Store to account storage
+    push.0.0.0.0 # Reserved slots
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+    
+    # Store amount and status in slot 1
+    push.STORAGE_SLOT_AMOUNT
+    push.0 # timestamp will be set by tx context
+    push.0 # created_timestamp 
+    push.ESCROW_STATUS_PENDING # Initial status
+    movup.8 # amount
+    push.0.0.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+    
+    # Initialize proof commitments slot 2 (empty)
+    push.STORAGE_SLOT_PROOFS
+    push.0.0.0.0.0.0.0.0
+    account::set_item
+    
+    # Initialize verification flags slot 3 (all false)
+    push.STORAGE_SLOT_FLAGS
+    push.0.0.0.0.0.0.0.0
+    account::set_item
+    
+    # Emit event
+    emit.ESCROW_INITIALIZED
+end
+
+# ============================================================================
+# LOCK FUNDS
+# ============================================================================
+# Called by buyer to deposit funds into escrow
+# Input: [amount] (note with funds consumed as input)
+export.lock_funds
+    # Verify caller is the buyer
+    exec.verify_caller_is_buyer
+    
+    # Verify escrow is in pending state
+    exec.get_escrow_status
+    push.ESCROW_STATUS_PENDING
+    assert_eq
+    # Stack: [amount]
+    
+    # Get locked amount from storage
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    # Stack: [amount_word, amount]
+    
+    drop drop drop # Keep only stored amount
+    # Stack: [stored_amount, input_amount]
+    
+    # Verify input amount matches expected
+    assert_eq
+    
+    # Update status to LOCKED
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    # Update status field
+    drop drop drop # Remove old values except amount
+    push.ESCROW_STATUS_LOCKED
+    push.0 # timestamp
+    push.0
+    movup.4 # Keep amount
+    push.0.0.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+    
+    # Set funds_locked flag
+    exec.set_funds_locked_flag
+    
+    # Emit event
+    emit.FUNDS_LOCKED
+end
+
+# ============================================================================
+# VERIFY PROOFS
+# ============================================================================
+# Called to verify each compliance proof
+# Input: [proof_type, proof_commitment]
+# proof_type: 0=ownership, 1=accreditation, 2=jurisdiction
+export.verify_proof
+    # Stack: [proof_type, proof_commitment]
+    
+    # Verify escrow is locked
+    exec.get_escrow_status
+    push.ESCROW_STATUS_LOCKED
+    assert_eq
+    
+    # Store proof commitment based on type
+    dup.1 # proof_type
+    push.0 eq
+    if.true
+        # Ownership proof
+        exec.store_ownership_proof
+        exec.set_ownership_verified_flag
+    else
+        dup.1 push.1 eq
+        if.true
+            # Accreditation proof
+            exec.store_accreditation_proof
+            exec.set_accreditation_verified_flag
+        else
+            # Jurisdiction proof (must be type 2)
+            exec.store_jurisdiction_proof
+            exec.set_jurisdiction_verified_flag
+        end
+    end
+    
+    # Emit event
+    emit.PROOF_VERIFIED
+end
+
+# ============================================================================
+# EXECUTE SETTLEMENT
+# ============================================================================
+# Called to finalize the transaction
+# Input: [property_note_id] (seller provides property note as input)
+export.execute_settlement
+    # Verify all proofs are verified
+    exec.verify_all_proofs_complete
+    
+    # Verify funds are locked
+    exec.verify_funds_locked
+    
+    # Verify escrow is still locked (not executed or refunded)
+    exec.get_escrow_status
+    push.ESCROW_STATUS_LOCKED
+    assert_eq
+    
+    # Verify property note matches
+    exec.verify_property_note
+    
+    # Update status to EXECUTED
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    drop drop drop
+    push.ESCROW_STATUS_EXECUTED
+    push.0 # execution_timestamp
+    push.0
+    movup.4
+    push.0.0.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+    
+    # Create output notes:
+    # 1. Property note to buyer
+    exec.create_property_transfer_note
+    
+    # 2. Payment note to seller
+    exec.create_payment_note
+    
+    # Emit event
+    emit.SETTLEMENT_EXECUTED
+end
+
+# ============================================================================
+# REFUND
+# ============================================================================
+# Called to refund buyer if conditions not met
+# Input: [reason_code]
+export.refund_escrow
+    # Verify escrow is locked
+    exec.get_escrow_status
+    push.ESCROW_STATUS_LOCKED
+    assert_eq
+    
+    # Verify deadline has passed OR seller cancelled
+    exec.verify_refund_conditions
+    
+    # Update status to REFUNDED
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    drop drop drop
+    push.ESCROW_STATUS_REFUNDED
+    push.0 # refund_timestamp
+    push.0
+    movup.4
+    push.0.0.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+    
+    # Create refund note to buyer
+    exec.create_refund_note
+    
+    # Emit event
+    emit.ESCROW_REFUNDED
+end
+
+# ============================================================================
+# HELPER PROCEDURES
+# ============================================================================
+
+proc.verify_caller_is_buyer
+    # Get buyer account ID from storage
+    push.STORAGE_SLOT_STATE
+    account::get_item
+    # word[2] is buyer_account_id
+    drop drop
+    # Stack: [buyer_id_high, buyer_id_low, ...]
+    
+    # Get caller account ID
+    tx::account_id
+    # Stack: [caller_id, buyer_id]
+    
+    # Verify they match
+    assert_eq
+end
+
+proc.get_escrow_status
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    # word[1] is status
+    drop drop drop
+    # Returns: [status]
+end
+
+proc.verify_all_proofs_complete
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    # Stack: [flags_word]
+    
+    # Verify all three flags are 1
+    # word[0]=ownership, word[1]=accreditation, word[2]=jurisdiction
+    dup.0 push.1 assert_eq drop
+    dup.0 push.1 assert_eq drop  
+    dup.0 push.1 assert_eq drop
+end
+
+proc.verify_funds_locked
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    drop drop drop
+    # word[3]=funds_locked
+    push.1 assert_eq
+end
+
+proc.store_ownership_proof
+    # Input: [proof_commitment]
+    push.STORAGE_SLOT_PROOFS
+    account::get_item
+    # Update word[0]
+    drop drop drop
+    movup.1
+    push.0.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+end
+
+proc.set_ownership_verified_flag
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    drop drop drop drop
+    push.1 # Set ownership flag
+    push.0.0.0
+    account::set_item
+end
+
+proc.store_accreditation_proof
+    # Input: [proof_commitment]
+    push.STORAGE_SLOT_PROOFS
+    account::get_item
+    drop drop
+    # Update word[1]
+    drop
+    movup.2
+    push.0.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+end
+
+proc.set_accreditation_verified_flag
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    drop drop drop
+    # Update word[1]
+    drop
+    push.1 # Set accreditation flag
+    push.0.0
+    account::set_item  
+end
+
+proc.store_jurisdiction_proof
+    # Input: [proof_commitment]
+    push.STORAGE_SLOT_PROOFS
+    account::get_item
+    drop
+    # Update word[2]
+    drop
+    movup.3
+    push.0
+    movup.4 movup.4 movup.4 movup.4
+    account::set_item
+end
+
+proc.set_jurisdiction_verified_flag
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    drop drop
+    # Update word[2]
+    drop
+    push.1 # Set jurisdiction flag
+    push.0
+    account::set_item
+end
+
+proc.set_funds_locked_flag
+    push.STORAGE_SLOT_FLAGS
+    account::get_item
+    drop drop drop drop
+    push.0.0.0
+    push.1 # Set funds_locked flag
+    account::set_item
+end
+
+proc.verify_property_note
+    # Input: [property_note_id]
+    push.STORAGE_SLOT_STATE
+    account::get_item
+    # word[3] is property_note_id
+    drop drop drop
+    # Stack: [stored_note_id, input_note_id]
+    assert_eq
+end
+
+proc.create_property_transfer_note
+    # Create note transferring property to buyer
+    # This would use Miden's note creation API
+    # Implementation depends on note format
+    # Placeholder for now
+end
+
+proc.create_payment_note
+    # Create note with payment to seller
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    drop drop drop
+    # amount is now on stack
+    # Create fungible note with this amount
+    # Placeholder for now
+end
+
+proc.create_refund_note
+    # Create refund note to buyer
+    push.STORAGE_SLOT_AMOUNT
+    account::get_item
+    drop drop drop
+    # amount is now on stack
+    # Create fungible note to buyer
+    # Placeholder for now
+end
+
+proc.verify_refund_conditions
+    # Check if deadline passed or seller approved refund
+    # Placeholder - would check timestamp
+end
+",
+
+"# property_nft.masm - Simple Property Handler v2
+#
+# Simplified version that works without complex advice map operations
+# Accepts property creation and maintains proper stack state
+
+use.miden::account
+
+begin
+    # Simple property NFT creation
+    # For now, just execute successfully without complex operations
+    
+    # Get account ID to verify we're operating on the right account
+    exec.account::get_id
+    # Stack: [account_id (4 elements), ...]
+    
+    # Store it back (this is a no-op but demonstrates account interaction)
+    dropw
+    
+    # In production, this would:
+    # 1. Read property data from advice map (requires more setup)
+    # 2. Validate the data
+    # 3. Store in account storage
+    # 4. Create output notes
+    # 5. Emit events
+    
+    # For now: successful execution
+    # Stack remains at depth 16
+end
+
+# ============================================================================
+# NEXT STEPS FOR FULL IMPLEMENTATION
+# ============================================================================
+# 
+# To make this a real property NFT system:
+# 
+# 1. Property Data Storage:
+#    - Use account storage slots to store property metadata
+#    - Slot 0: Property ID
+#    - Slot 1: Price
+#    - Slot 2: Property type
+#    - Slot 3-4: IPFS CID hash
+#
+# 2. Validation:
+#    - Verify caller is authorized
+#    - Validate property data format
+#    - Check price > 0
+#    - Verify property type is valid
+#
+# 3. Note Creation:
+#    - Create output note representing the property NFT
+#    - Include encrypted metadata
+#    - Set proper ownership
+#
+# 4. Events:
+#    - Emit PROPERTY_CREATED event
+#    - Include property ID and owner
+#
+# This requires proper advice map setup and note scripting
+# which we'll build incrementally
+",
+
+
+    "====================",
+    "INSTRUCTIONS FOR CLAUDE",
+    "====================",
+    "Claude, now that you have the entire repo, do the following:",
+    "1. Identify missing flows needed to complete all 19 required features",
+    "2. Propose next immediate engineering tasks",
+    "3. Improve integrations between controllers ↔ services ↔ Miden client",
+    "4. Suggest necessary new endpoints",
+    "5. Suggest a real production database schema replacing in-memory Maps",
+    "6. Suggest frontend integration steps",
+    "7. Suggest security improvements (encryption, proofs, accounts)",
+    "8. Continue writing new backend code where needed",
+
+    "Always respond with structured, technical, and actionable output."
+  ]
+}
