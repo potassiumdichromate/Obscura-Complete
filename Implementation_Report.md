@@ -4,7 +4,6 @@
 
 ---
 
-**Prepared by:** FrameX Corporation  
 **Date:** December 6, 2025  
 **Platform:** Obscura - Privacy-Preserving Real Estate Marketplace  
 **Blockchain:** Miden Testnet (v0.12)  
@@ -32,7 +31,7 @@
 
 ## Executive Summary
 
-FrameX Corporation has successfully implemented a production-ready, privacy-preserving real estate marketplace leveraging Miden's zero-knowledge proof capabilities. This report documents our technical journey, including:
+We have successfully implemented a production-ready, privacy-preserving real estate marketplace leveraging Miden's zero-knowledge proof capabilities. This report documents our technical journey, including:
 
 - **12/19 features** implemented (63% complete)
 - **Complete escrow system** with on-chain verification
@@ -653,54 +652,6 @@ These benchmarks help developers set realistic expectations.
 ✅ **String Identifiers:** "alice"/"faucet" for known accounts, hex for serialized  
 ✅ **Comprehensive Logging:** Trace-level logs for all operations
 
----
-
-## Next Steps & Roadmap
-
-### Immediate (Next 2 Weeks)
-
-**Feature 12: Offer/Bidding System** (3-4 hours)
-- Multiple buyers can bid on properties
-- Highest bid wins
-- Auto-creates escrow on acceptance
-
-**Feature 13: Property Verification** (2-3 hours)
-- Admin approval workflow
-- Verification status tracking
-
-**Feature 14: Fractional Ownership** (3-4 hours)
-- Split property NFTs into shares
-- Partial ownership trading
-
-### Medium Term (1 Month)
-
-**Features 15-17:** Authentication, Access Control, Analytics  
-**Estimated:** 10-12 hours total
-
-### Long Term (2-3 Months)
-
-**Features 18-19:** Notifications, Full Frontend Integration  
-**Launch:** Production MVP on Miden mainnet (when available)
-
----
-
-## Partnership Value Proposition
-
-### What FrameX Brings to Miden
-
-1. **Real-World Use Case** - Production real estate marketplace
-2. **Technical Feedback** - Deep integration insights and suggestions
-3. **Developer Advocacy** - Documentation of best practices
-4. **Ecosystem Growth** - Reference implementation for others
-
-### What We Need from Miden
-
-1. **Technical Support** - Direct line to engineering for blockers
-2. **Early Access** - Beta features and mainnet launch coordination
-3. **Co-Marketing** - Joint case study and success story
-4. **Integration Support** - Assistance with advanced features
-
----
 
 ## Metrics & KPIs
 
@@ -725,27 +676,10 @@ These benchmarks help developers set realistic expectations.
 
 ---
 
-## Business Impact
-
-### For FrameX
-
-✅ **Technical Validation** - Proven ability to build on cutting-edge blockchain  
-✅ **Competitive Advantage** - Privacy-preserving real estate platform  
-✅ **Partnership Value** - Early adopter of Miden technology  
-✅ **Market Differentiation** - ZK-based privacy in real estate
-
-### For Miden
-
-✅ **Enterprise Use Case** - Real-world application validation  
-✅ **Developer Feedback** - Production integration insights  
-✅ **Ecosystem Expansion** - Real estate vertical adoption  
-✅ **Technical Validation** - Complex escrow system proven
-
----
 
 ## Conclusion
 
-FrameX Corporation has successfully demonstrated that **Miden is production-ready for complex blockchain applications**, specifically privacy-preserving real estate tokenization and escrow.
+we have successfully demonstrated that **Miden is production-ready for complex blockchain applications**, specifically privacy-preserving real estate tokenization and escrow.
 
 ### Key Achievements
 
@@ -772,34 +706,8 @@ While Miden's core technology is excellent, **developer experience** could be en
 
 ### Recommendation
 
-We **strongly recommend** Miden for production blockchain applications requiring privacy, with the caveat that developers should expect a learning curve for advanced patterns.
-
-**FrameX commits to:**
-- Continuing development on Miden
-- Sharing knowledge with the community
-- Providing ongoing technical feedback
-- Championing Miden in the real estate vertical
-
-**We request Miden's support in:**
-- Technical guidance for advanced features
-- Early mainnet access
-- Co-marketing opportunities
-- Direct engineering communication channel
-
 ---
 
-## Contact & Collaboration
-
-**FrameX Corporation**  
-**Platform:** Obscura × Miden POC  
-**Email:** sidhanth@framex.io  
-**Website:** [framex.io](https://framex.io)
-
-**Project Status:** Active Development  
-**Next Milestone:** 19/19 features (ETA: 4-6 weeks)  
-**Production Launch:** Q1 2026 (pending Miden mainnet)
-
----
 
 ## Appendices
 
@@ -880,11 +788,5 @@ All transactions verifiable:
 ---
 
 <div align="center">
-
-**Built with ❤️ by FrameX Corporation**
-
-*Every Frame Matters* | Blockchain Game Development
-
-Bangkok, Thailand
 
 </div>
