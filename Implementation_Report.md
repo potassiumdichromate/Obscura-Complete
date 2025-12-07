@@ -11,22 +11,6 @@
 
 ---
 
-## Table of Contents
-
-1. [Executive Summary](#executive-summary)
-2. [Project Overview](#project-overview)
-3. [Features Implemented](#features-implemented)
-4. [Technical Implementation](#technical-implementation)
-5. [Major Technical Challenges & Solutions](#major-technical-challenges--solutions)
-6. [Test Results & Verification](#test-results--verification)
-7. [Constructive Suggestions for Miden Platform](#constructive-suggestions-for-miden-platform)
-8. [Lessons Learned & Best Practices](#lessons-learned--best-practices)
-9. [Next Steps & Roadmap](#next-steps--roadmap)
-10. [Partnership Value Proposition](#partnership-value-proposition)
-11. [Business Impact](#business-impact)
-12. [Conclusion](#conclusion)
-13. [Contact & Collaboration](#contact--collaboration)
-
 ---
 
 ## Executive Summary
