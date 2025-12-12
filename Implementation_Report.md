@@ -773,4 +773,8 @@ All transactions verifiable:
 
 <div align="center">
 
+<<<<<<< HEAD
 </div>
+=======
+</div>
+>>>>>>> a2aee02 (Full Backend Functionality)

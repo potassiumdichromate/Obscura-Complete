@@ -24,7 +24,7 @@
     "privacy",
     "nft"
   ],
-  "author": "FrameX Corporation",
+  "author": "Obscura Labs",
   "license": "MIT",
   "dependencies": {
     "axios": "^1.13.2",

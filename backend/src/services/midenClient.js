@@ -1,5 +1,5 @@
 /**
- * Miden Client Service - Complete v0.12 Integration with Escrow System
+ * Miden Client Service - v0.12 with Escrow + ZK Proofs (Accreditation + Jurisdiction)
  * 
  * Connects Node.js backend to Rust Miden service
  * Architecture: Node.js (Express) → Rust (Axum) → Miden Testnet
@@ -10,7 +10,7 @@ const axios = require('axios');
 class MidenClientService {
   constructor() {
     this.rustServiceUrl = process.env.MIDEN_RUST_SERVICE_URL || 'http://localhost:3000';
-    this.timeout = 60000; // 60 second timeout for blockchain operations
+    this.timeout = 180000; // 180 second timeout
     this.explorerUrl = 'https://testnet.midenscan.com';
     
     this.client = axios.create({
@@ -28,9 +28,6 @@ class MidenClientService {
   // CORE BLOCKCHAIN OPERATIONS
   // ============================================================================
 
-  /**
-   * Health check
-   */
   async healthCheck() {
     try {
       const response = await this.client.get('/health');
@@ -51,9 +48,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Get account information
-   */
   async getAccountInfo() {
     try {
       const response = await this.client.get('/get-account');
@@ -74,9 +68,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Create/Mint a property NFT token
-   */
   async createPropertyToken(propertyData, ownerAccountId = 'alice') {
     try {
       console.log('🏗️  Creating property token:', propertyData.id);
@@ -112,9 +103,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Get consumable notes
-   */
   async getConsumableNotes(accountId = null) {
     try {
       console.log('📋 Getting consumable notes...');
@@ -138,9 +126,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Consume note (add to account balance)
-   */
   async consumeNote(noteId) {
     try {
       console.log('🔥 Consuming note:', noteId);
@@ -167,9 +152,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Transfer property ownership
-   */
   async transferProperty(propertyId, toAccountId) {
     try {
       console.log('🔄 Transferring property:', propertyId);
@@ -198,9 +180,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Send tokens
-   */
   async sendTokens(toAccountId, amount) {
     try {
       console.log('💸 Sending tokens:', amount, 'to', toAccountId);
@@ -228,9 +207,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Get account balance
-   */
   async getAccountBalance(accountId = 'alice') {
     try {
       console.log('💰 Getting balance for:', accountId);
@@ -256,13 +232,6 @@ class MidenClientService {
   // ESCROW SYSTEM
   // ============================================================================
 
-  /**
-   * Create escrow account for property transaction
-   * @param {string} buyerAccountId - Buyer's Miden account ID
-   * @param {string} sellerAccountId - Seller's Miden account ID
-   * @param {number} amount - Amount to escrow
-   * @returns {Promise<Object>} Escrow details
-   */
   async createEscrow(buyerAccountId, sellerAccountId, amount) {
     try {
       console.log(`🔒 Creating escrow: buyer=${buyerAccountId}, seller=${sellerAccountId}, amount=${amount}`);
@@ -292,11 +261,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Fund escrow (buyer sends tokens to escrow)
-   * @param {Object} escrow - Escrow details
-   * @returns {Promise<Object>} Transaction details
-   */
   async fundEscrow(escrow) {
     try {
       console.log(`💰 Funding escrow: ${escrow.escrowAccountId}`);
@@ -324,11 +288,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Release escrow funds to seller (on successful sale)
-   * @param {Object} escrow - Escrow details
-   * @returns {Promise<Object>} Transaction details
-   */
   async releaseEscrow(escrow) {
     try {
       console.log(`🔓 Releasing escrow to seller: ${escrow.escrowAccountId}`);
@@ -356,11 +315,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Refund escrow to buyer (if sale fails)
-   * @param {Object} escrow - Escrow details
-   * @returns {Promise<Object>} Transaction details
-   */
   async refundEscrow(escrow) {
     try {
       console.log(`↩️  Refunding escrow to buyer: ${escrow.escrowAccountId}`);
@@ -389,12 +343,164 @@ class MidenClientService {
   }
 
   // ============================================================================
+  // ZK PROOF OPERATIONS - ACCREDITATION
+  // ============================================================================
+
+  async generateAccreditationProof(netWorth, threshold = 1000000) {
+    try {
+      console.log('🔐 Generating accreditation proof...');
+      console.log(`   Threshold: $${threshold.toLocaleString()} (public)`);
+      console.log(`   Net worth: $${netWorth.toLocaleString()} (PRIVATE - stays hidden)`);
+      
+      const response = await this.client.post('/generate-accreditation-proof', {
+        net_worth: netWorth,
+        threshold: threshold
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Proof generation failed');
+      }
+
+      console.log('✅ ZK proof generated successfully!');
+      console.log('   ℹ️  Your net worth is NOT revealed in the proof');
+
+      return {
+        success: true,
+        proof: response.data.proof.proof,
+        programHash: response.data.proof.program_hash,
+        publicInputs: response.data.proof.public_inputs,
+        proofType: response.data.proof.proof_type,
+        timestamp: response.data.proof.timestamp
+      };
+    } catch (error) {
+      console.error('Generate proof failed:', error.message);
+      
+      if (error.response?.status === 422) {
+        throw new Error('Invalid input: Net worth does not meet threshold');
+      }
+      
+      throw new Error(`Failed to generate accreditation proof: ${error.message}`);
+    }
+  }
+
+  async verifyAccreditationProof(proof) {
+    try {
+      console.log('🔍 Verifying accreditation proof...');
+      
+      const response = await this.client.post('/verify-accreditation-proof', {
+        proof: proof.proof,
+        program_hash: proof.programHash,
+        public_inputs: proof.publicInputs
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Proof verification failed');
+      }
+
+      const isValid = response.data.valid;
+      
+      if (isValid) {
+        console.log('✅ Proof VERIFIED! User is accredited.');
+        console.log(`   Threshold met: $${response.data.threshold.toLocaleString()}`);
+      } else {
+        console.log('❌ Proof verification FAILED');
+      }
+
+      return {
+        success: true,
+        valid: response.data.valid,
+        threshold: response.data.threshold,
+        verifiedAt: response.data.verified_at,
+        proofType: response.data.proof_type
+      };
+    } catch (error) {
+      console.error('Verify proof failed:', error.message);
+      throw new Error(`Failed to verify accreditation proof: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
+  // ZK PROOF OPERATIONS - JURISDICTION (NEW!)
+  // ============================================================================
+
+  async generateJurisdictionProof(countryCode, restrictedCountries = ['US', 'KP', 'IR']) {
+    try {
+      console.log('🌍 Generating jurisdiction proof...');
+      console.log(`   Country: ${countryCode} (PRIVATE - stays hidden)`);
+      console.log(`   Restricted list: ${restrictedCountries.join(', ')} (public)`);
+      
+      const response = await this.client.post('/generate-jurisdiction-proof', {
+        country_code: countryCode,
+        restricted_countries: restrictedCountries
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Jurisdiction proof generation failed');
+      }
+
+      console.log('✅ Jurisdiction proof generated successfully!');
+      console.log('   ℹ️  Your country is NOT revealed in the proof');
+
+      return {
+        success: true,
+        proof: response.data.proof.proof,
+        programHash: response.data.proof.program_hash,
+        publicInputs: response.data.proof.public_inputs,
+        proofType: response.data.proof.proof_type,
+        timestamp: response.data.proof.timestamp,
+        restrictedCount: response.data.proof.restricted_count
+      };
+    } catch (error) {
+      console.error('Generate jurisdiction proof failed:', error.message);
+      
+      if (error.response?.status === 422) {
+        throw new Error('Invalid: User is in a restricted jurisdiction');
+      }
+      
+      throw new Error(`Failed to generate jurisdiction proof: ${error.message}`);
+    }
+  }
+
+  async verifyJurisdictionProof(proof) {
+    try {
+      console.log('🔍 Verifying jurisdiction proof...');
+      
+      const response = await this.client.post('/verify-jurisdiction-proof', {
+        proof: proof.proof,
+        program_hash: proof.programHash,
+        public_inputs: proof.publicInputs
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Jurisdiction proof verification failed');
+      }
+
+      const isValid = response.data.valid;
+      
+      if (isValid) {
+        console.log('✅ Jurisdiction proof VERIFIED! User is compliant.');
+        console.log('   User is NOT in restricted jurisdiction');
+      } else {
+        console.log('❌ Jurisdiction proof verification FAILED');
+      }
+
+      return {
+        success: true,
+        valid: response.data.valid,
+        verifiedAt: response.data.verified_at,
+        proofType: response.data.proof_type,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('Verify jurisdiction proof failed:', error.message);
+      throw new Error(`Failed to verify jurisdiction proof: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
   // UTILITY METHODS
   // ============================================================================
 
-  /**
-   * Verify transaction on MidenScan
-   */
   async verifyTransaction(transactionId) {
     try {
       const explorerUrl = `${this.explorerUrl}/tx/${transactionId}`;
@@ -412,9 +518,6 @@ class MidenClientService {
     }
   }
 
-  /**
-   * Batch mint properties
-   */
   async batchMintProperties(properties) {
     try {
       console.log(`🏗️  Batch minting ${properties.length} properties...`);
@@ -425,7 +528,6 @@ class MidenClientService {
           const result = await this.createPropertyToken(property);
           results.push(result);
           
-          // Small delay between mints
           await new Promise(resolve => setTimeout(resolve, 1000));
         } catch (error) {
           console.error(`Failed to mint property ${property.id}:`, error.message);
@@ -447,29 +549,16 @@ class MidenClientService {
     }
   }
 
-  // ============================================================================
-  // LEGACY/DEPRECATED METHODS (for backwards compatibility)
-  // ============================================================================
-
-  /**
-   * @deprecated Use createPropertyToken instead
-   */
   async createPropertyNote(propertyData, ownerAccountId) {
     console.warn('⚠️  createPropertyNote is deprecated, use createPropertyToken');
     return this.createPropertyToken(propertyData, ownerAccountId);
   }
 
-  /**
-   * @deprecated Rust service handles initialization automatically
-   */
   async initialize() {
     console.warn('⚠️  initialize() is deprecated. Rust service initializes automatically.');
     return { success: true, message: 'Rust service handles initialization' };
   }
 
-  /**
-   * @deprecated Rust service syncs automatically
-   */
   async sync() {
     console.warn('⚠️  sync() is deprecated. Rust service syncs automatically.');
     return { success: true, message: 'Rust service syncs automatically' };
@@ -511,5 +600,4 @@ class MidenClientService {
   }
 }
 
-// Export singleton instance
 module.exports = new MidenClientService();

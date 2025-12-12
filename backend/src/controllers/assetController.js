@@ -1,12 +1,14 @@
 /**
  * Asset Controller - Property Management Logic
  * Handles all property-related operations with real Miden integration
+ * UPDATED: Now includes MongoDB integration for verification system
  */
 
 const midenClient = require('../services/midenClient');
 const ipfsService = require('../services/ipfsService');
 const noteManager = require('../services/noteManager');
 const logger = require('../utils/logger');
+const Property = require('../models/Property'); // ← ADD THIS
 
 // In-memory storage (replace with database in production)
 const assets = new Map();
@@ -14,6 +16,7 @@ const assetHistory = new Map();
 
 /**
  * Mint new property as Miden note
+ * UPDATED: Now saves to MongoDB for verification workflow
  */
 exports.mintAsset = async (req, res, next) => {
   try {
@@ -58,7 +61,7 @@ exports.mintAsset = async (req, res, next) => {
       ownerAddress
     );
 
-    // Store in database
+    // Store in memory (existing)
     const asset = {
       id: propertyData.id,
       noteId,
@@ -84,6 +87,29 @@ exports.mintAsset = async (req, res, next) => {
       noteId
     }]);
 
+    // ✅ NEW: Save to MongoDB for verification workflow
+    try {
+      await Property.create({
+        propertyId: asset.id,
+        ownerAccountId: ownerAddress,
+        ipfsCid: ipfsCid,
+        propertyType: propertyType === 'commercial' ? 2 : 1,
+        price: parseInt(price),
+        noteId: noteId,
+        transactionId: commitment || noteId, // Use commitment as transaction ID
+        verificationStatus: 'pending', // Start as pending
+        documents: files.map(f => ({
+          type: f.mimetype,
+          url: `ipfs://${ipfsCid}/${f.originalname}`,
+          uploadedAt: new Date()
+        }))
+      });
+      logger.info('Property saved to MongoDB for verification', { propertyId: asset.id });
+    } catch (dbError) {
+      // Don't fail the mint if MongoDB save fails
+      logger.error('Failed to save to MongoDB (non-critical)', { error: dbError.message });
+    }
+
     logger.info('Property minted successfully', { assetId: asset.id, noteId });
 
     res.status(201).json({
@@ -95,6 +121,11 @@ exports.mintAsset = async (req, res, next) => {
         ipfsCid,
         explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${noteId}`,
         publicData: asset.publicData
+      },
+      // Include verification status
+      verification: {
+        status: 'pending',
+        message: 'Property submitted for verification'
       }
     });
 
@@ -106,11 +137,47 @@ exports.mintAsset = async (req, res, next) => {
 
 /**
  * List all properties
+ * UPDATED: Now queries MongoDB for verified properties
  */
 exports.listAssets = async (req, res, next) => {
   try {
-    const { status, propertyType, minPrice, maxPrice, location, limit = 50, offset = 0 } = req.query;
+    const { status, propertyType, minPrice, maxPrice, location, limit = 50, offset = 0, verified } = req.query;
 
+    // If verified filter requested, query MongoDB
+    if (verified === 'true') {
+      const query = { verificationStatus: 'verified' };
+      
+      if (propertyType) query.propertyType = propertyType === 'commercial' ? 2 : 1;
+      if (minPrice) query.price = { ...query.price, $gte: parseInt(minPrice) };
+      if (maxPrice) query.price = { ...query.price, $lte: parseInt(maxPrice) };
+
+      const properties = await Property.find(query)
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip(parseInt(offset));
+
+      const total = await Property.countDocuments(query);
+
+      return res.json({
+        success: true,
+        assets: properties.map(p => ({
+          id: p.propertyId,
+          noteId: p.noteId,
+          title: p.propertyId,
+          location: 'Location hidden',
+          price: p.price,
+          verified: true
+        })),
+        pagination: {
+          total,
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          hasMore: parseInt(offset) + parseInt(limit) < total
+        }
+      });
+    }
+
+    // Original in-memory query
     let assetList = Array.from(assets.values());
 
     // Apply filters
@@ -143,6 +210,7 @@ exports.listAssets = async (req, res, next) => {
 
 /**
  * Get property details
+ * UPDATED: Now includes verification status from MongoDB
  */
 exports.getAsset = async (req, res, next) => {
   try {
@@ -156,6 +224,21 @@ exports.getAsset = async (req, res, next) => {
       });
     }
 
+    // Check verification status in MongoDB
+    let verificationData = null;
+    try {
+      const property = await Property.findOne({ propertyId: id });
+      if (property) {
+        verificationData = {
+          status: property.verificationStatus,
+          verifiedAt: property.verifiedAt,
+          verifiedBy: property.verifiedBy
+        };
+      }
+    } catch (dbError) {
+      logger.error('Failed to fetch verification status', { error: dbError.message });
+    }
+
     res.json({
       success: true,
       asset: {
@@ -164,7 +247,8 @@ exports.getAsset = async (req, res, next) => {
         noteId: asset.noteId,
         status: asset.status,
         createdAt: asset.createdAt,
-        explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${asset.noteId}`
+        explorerUrl: `${process.env.MIDEN_EXPLORER_URL}/note/${asset.noteId}`,
+        verification: verificationData
       }
     });
 
@@ -174,9 +258,7 @@ exports.getAsset = async (req, res, next) => {
   }
 };
 
-/**
- * Unlock full details with proofs
- */
+// Keep all other existing methods unchanged...
 exports.unlockAssetDetails = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -216,9 +298,6 @@ exports.unlockAssetDetails = async (req, res, next) => {
   }
 };
 
-/**
- * Get owner properties
- */
 exports.getOwnerAssets = async (req, res, next) => {
   try {
     const { address } = req.params;
@@ -236,9 +315,6 @@ exports.getOwnerAssets = async (req, res, next) => {
   }
 };
 
-/**
- * Get asset history
- */
 exports.getAssetHistory = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -255,9 +331,6 @@ exports.getAssetHistory = async (req, res, next) => {
   }
 };
 
-/**
- * Update property
- */
 exports.updateAsset = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -295,9 +368,6 @@ exports.updateAsset = async (req, res, next) => {
   }
 };
 
-/**
- * Delete asset
- */
 exports.deleteAsset = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -320,9 +390,6 @@ exports.deleteAsset = async (req, res, next) => {
   }
 };
 
-/**
- * Get asset offers
- */
 exports.getAssetOffers = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -338,9 +405,6 @@ exports.getAssetOffers = async (req, res, next) => {
   }
 };
 
-/**
- * Get metadata
- */
 exports.getMetadata = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -360,9 +424,6 @@ exports.getMetadata = async (req, res, next) => {
   }
 };
 
-/**
- * Transfer asset
- */
 exports.transferAsset = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -397,9 +458,6 @@ exports.transferAsset = async (req, res, next) => {
   }
 };
 
-/**
- * Search assets
- */
 exports.searchAssets = async (req, res, next) => {
   try {
     const { q } = req.query;
@@ -421,9 +479,6 @@ exports.searchAssets = async (req, res, next) => {
   }
 };
 
-/**
- * Get featured assets
- */
 exports.getFeaturedAssets = async (req, res, next) => {
   try {
     const assetList = Array.from(assets.values()).slice(0, 10);
@@ -438,9 +493,6 @@ exports.getFeaturedAssets = async (req, res, next) => {
   }
 };
 
-/**
- * Get asset stats
- */
 exports.getAssetStats = async (req, res, next) => {
   try {
     const assetList = Array.from(assets.values());
@@ -460,9 +512,6 @@ exports.getAssetStats = async (req, res, next) => {
   }
 };
 
-/**
- * Batch mint assets
- */
 exports.batchMintAssets = async (req, res, next) => {
   try {
     const { properties } = req.body;

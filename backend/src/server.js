@@ -13,19 +13,32 @@ require('dotenv').config();
 
 // Routes
 const assetRoutes = require('./routes/assetRoutes');
-const offerRoutes = require('./routes/offerRoutes');
+// const offerRoutes = require('./routes/offerRoutes');
 // const escrowRoutes = require('./routes/escrowRoutes');
+const connectDB = require('./config/mongodb');
+const offerRoutes = require('./routes/offerRoutes');
+const verificationRoutes = require('./routes/verificationRoutes');
 const proofRoutes = require('./routes/proofRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const healthRoutes = require('./routes/healthRoutes');
-const escrowRoutes = require('./routes/escrow');
-
+const settlementRoutes = require('./routes/settlementRoutes');
+// const escrowRoutes = require('./routes/escrow');
+const noteRoutes = require('./routes/noteRoutes');
+const escrowRoutes = require('./routes/escrowRoutes');
 // Middleware
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
 
+const propertyRoutes = require('./routes/propertyRoutes');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+
+connectDB().catch(err => {
+  console.error('MongoDB connection failed:', err);
+});
+
 
 // ============================================================================
 // MIDDLEWARE
@@ -72,16 +85,22 @@ app.use(`${API_PREFIX}/health`, healthRoutes);
 // Assets (Properties)
 app.use(`${API_PREFIX}/assets`, assetRoutes);
 
+app.use(`${API_PREFIX}/notes`, noteRoutes);
 // Offers
-app.use(`${API_PREFIX}/offers`, offerRoutes);
+// app.use(`${API_PREFIX}/offers`, offerRoutes);
 
 // Escrow
 // app.use(`${API_PREFIX}/escrow`, escrowRoutes);
-app.use('/api/v1/escrow', escrowRoutes);
+// app.use('/api/v1/escrow', escrowRoutes);
+app.use(`${API_PREFIX}/escrow`, escrowRoutes);
 
+app.use('/api/v1/properties', propertyRoutes);
 // Proofs
 app.use(`${API_PREFIX}/proofs`, proofRoutes);
 
+app.use(`${API_PREFIX}/offers`, offerRoutes);
+app.use(`${API_PREFIX}/verification`, verificationRoutes);
+app.use('/api/v1/settlement', settlementRoutes);
 // Wallet
 app.use(`${API_PREFIX}/wallet`, walletRoutes);
 

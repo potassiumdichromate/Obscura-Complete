@@ -1,4 +1,4 @@
-// src/main.rs - Complete REST API Server with Escrow System
+// src/main.rs - Complete REST API Server with Escrow System + ZK Proofs (Accreditation + Jurisdiction)
 use axum::{
     extract::State,
     routing::{get, post},
@@ -71,6 +71,30 @@ enum ClientCommand {
     RefundEscrow {
         escrow: EscrowAccount,
         resp: oneshot::Sender<Result<String, String>>,
+    },
+    // ZK PROOF COMMANDS - ACCREDITATION
+    GenerateAccreditationProof {
+        net_worth: u64,
+        threshold: u64,
+        response: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    VerifyAccreditationProof {
+        proof: String,
+        program_hash: String,
+        public_inputs: Vec<u64>,
+        response: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    // ZK PROOF COMMANDS - JURISDICTION (NEW!)
+    GenerateJurisdictionProof {
+        country_code: String,
+        restricted_countries: Vec<String>,
+        response: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    VerifyJurisdictionProof {
+        proof: String,
+        program_hash: String,
+        public_inputs: Vec<u64>,
+        response: oneshot::Sender<Result<serde_json::Value, String>>,
     },
 }
 
@@ -210,19 +234,42 @@ struct RefundEscrowRequest {
     amount: u64,
 }
 
+// ZK Proof Request Types - Accreditation
+#[derive(Debug, Deserialize)]
+struct GenerateAccreditationProofRequest {
+    net_worth: u64,
+    threshold: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyAccreditationProofRequest {
+    proof: String,
+    program_hash: String,
+    public_inputs: Vec<u64>,
+}
+
+// ZK Proof Request Types - Jurisdiction (NEW!)
+#[derive(Debug, Deserialize)]
+struct GenerateJurisdictionProofRequest {
+    country_code: String,
+    restricted_countries: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyJurisdictionProofRequest {
+    proof: String,
+    program_hash: String,
+    public_inputs: Vec<u64>,
+}
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
 fn parse_account_id_from_hex(hex_str: &str) -> Result<AccountId, String> {
-    // Remove 0x prefix if present
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    
-    // Decode hex to bytes
     let bytes = hex::decode(hex_str)
         .map_err(|e| format!("Failed to decode hex: {}", e))?;
-    
-    // Deserialize AccountId from bytes using Deserializable trait
     AccountId::read_from_bytes(&bytes[..])
         .map_err(|e| format!("Failed to deserialize AccountId: {}", e))
 }
@@ -233,7 +280,6 @@ fn parse_account_id_from_hex(hex_str: &str) -> Result<AccountId, String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -241,15 +287,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    info!("🚀 Starting Miden Rust Service with Escrow System...");
+    info!("🚀 Starting Miden Rust Service with Escrow + ZK Proofs (Accreditation + Jurisdiction)...");
 
-    // Create channel for client commands
     let (client_tx, mut client_rx) = mpsc::channel::<ClientCommand>(100);
-
-    // Create a LocalSet for !Send futures
     let local = LocalSet::new();
 
-    // Spawn the client initialization task within LocalSet
     local.spawn_local(async move {
         info!("🔧 Initializing Miden client...");
         match MidenClientWrapper::new().await {
@@ -257,7 +299,6 @@ async fn main() -> anyhow::Result<()> {
                 info!("✅ Miden client initialized successfully");
                 info!("📡 Client task ready to process commands");
                 
-                // Process commands
                 while let Some(cmd) = client_rx.recv().await {
                     match cmd {
                         ClientCommand::MintProperty {
@@ -279,90 +320,81 @@ async fn main() -> anyhow::Result<()> {
                                 )
                                 .await
                                 .map_err(|e| e.to_string());
-                            
                             let _ = response.send(result);
                         }
                         ClientCommand::GetAccountInfo { response } => {
                             info!("Processing get account info");
-                            let result = client
-                                .get_account_info()
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.get_account_info().await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::GetConsumableNotes { account_id, response } => {
                             info!("Processing get consumable notes");
-                            let result = client
-                                .get_consumable_notes(account_id)
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.get_consumable_notes(account_id).await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::ConsumeNote { note_id, response } => {
                             info!("Processing consume note: {}", note_id);
-                            let result = client
-                                .consume_note(&note_id)
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.consume_note(&note_id).await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::TransferProperty { property_id, to_account_id, response } => {
                             info!("Processing transfer property: {} to {}", property_id, to_account_id);
-                            let result = client
-                                .transfer_property(&property_id, &to_account_id)
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.transfer_property(&property_id, &to_account_id).await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::SendTokens { to_account_id, amount, response } => {
                             info!("Processing send tokens: {} to {}", amount, to_account_id);
-                            let result = client
-                                .send_tokens(&to_account_id, amount)
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.send_tokens(&to_account_id, amount).await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::GetBalance { account_id, response } => {
                             info!("Processing get balance: {}", account_id);
-                            let result = client
-                                .get_account_balance(&account_id)
-                                .await
-                                .map_err(|e| e.to_string());
-                            
+                            let result = client.get_account_balance(&account_id).await.map_err(|e| e.to_string());
                             let _ = response.send(result);
                         }
                         ClientCommand::CreateEscrow { buyer_account_str, seller_account_str, amount, resp } => {
                             info!("Processing create escrow");
-                            let result = client.create_escrow(&buyer_account_str, &seller_account_str, amount).await
-                                .map_err(|e| e.to_string());
+                            let result = client.create_escrow(&buyer_account_str, &seller_account_str, amount).await.map_err(|e| e.to_string());
                             let _ = resp.send(result);
                         }
                         ClientCommand::FundEscrow { escrow, resp } => {
                             info!("Processing fund escrow");
-                            let result = client.fund_escrow(&escrow).await
-                                .map_err(|e| e.to_string());
+                            let result = client.fund_escrow(&escrow).await.map_err(|e| e.to_string());
                             let _ = resp.send(result);
                         }
                         ClientCommand::ReleaseEscrow { escrow, resp } => {
                             info!("Processing release escrow");
-                            let result = client.release_escrow(&escrow).await
-                                .map_err(|e| e.to_string());
+                            let result = client.release_escrow(&escrow).await.map_err(|e| e.to_string());
                             let _ = resp.send(result);
                         }
                         ClientCommand::RefundEscrow { escrow, resp } => {
                             info!("Processing refund escrow");
-                            let result = client.refund_escrow(&escrow).await
-                                .map_err(|e| e.to_string());
+                            let result = client.refund_escrow(&escrow).await.map_err(|e| e.to_string());
                             let _ = resp.send(result);
+                        }
+                        ClientCommand::GenerateAccreditationProof { net_worth, threshold, response } => {
+                            info!("Processing generate accreditation proof");
+                            let result = client.generate_accreditation_proof(net_worth, threshold).await.map_err(|e| e.to_string());
+                            let _ = response.send(result);
+                        }
+                        ClientCommand::VerifyAccreditationProof { proof, program_hash, public_inputs, response } => {
+                            info!("Processing verify accreditation proof");
+                            let result = client.verify_accreditation_proof(&proof, &program_hash, public_inputs).await.map_err(|e| e.to_string());
+                            let _ = response.send(result);
+                        }
+                        // JURISDICTION PROOF HANDLERS (NEW!)
+                        ClientCommand::GenerateJurisdictionProof { country_code, restricted_countries, response } => {
+                            info!("Processing generate jurisdiction proof");
+                            let result = client.generate_jurisdiction_proof(&country_code, restricted_countries).await.map_err(|e| e.to_string());
+                            let _ = response.send(result);
+                        }
+                        ClientCommand::VerifyJurisdictionProof { proof, program_hash, public_inputs, response } => {
+                            info!("Processing verify jurisdiction proof");
+                            let result = client.verify_jurisdiction_proof(&proof, &program_hash, public_inputs).await.map_err(|e| e.to_string());
+                            let _ = response.send(result);
                         }
                     }
                 }
-                
                 error!("⚠️ Client task channel closed");
             }
             Err(e) => {
@@ -371,10 +403,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Create application state with command sender
     let state = AppState { client_tx };
 
-    // Build router with CORS
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/get-account", get(get_account_info))
@@ -389,17 +419,23 @@ async fn main() -> anyhow::Result<()> {
         .route("/fund-escrow", post(fund_escrow))
         .route("/release-escrow", post(release_escrow))
         .route("/refund-escrow", post(refund_escrow))
+        // ZK Proof endpoints - Accreditation
+        .route("/generate-accreditation-proof", post(generate_accreditation_proof))
+        .route("/verify-accreditation-proof", post(verify_accreditation_proof))
+        // ZK Proof endpoints - Jurisdiction (NEW!)
+        .route("/generate-jurisdiction-proof", post(generate_jurisdiction_proof))
+        .route("/verify-jurisdiction-proof", post(verify_jurisdiction_proof))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
-    // Start server
     let addr = "127.0.0.1:3000";
     info!("🌐 Server listening on http://{}", addr);
     info!("🔒 Escrow system enabled");
+    info!("🔐 ZK Proof system enabled (Accreditation)");
+    info!("🌍 ZK Proof system enabled (Jurisdiction)");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     
-    // Run both the LocalSet and the server concurrently
     tokio::select! {
         _ = local => {
             error!("❌ LocalSet (client task) terminated");
@@ -416,15 +452,13 @@ async fn main() -> anyhow::Result<()> {
 // ENDPOINT HANDLERS
 // ============================================================================
 
-// Health check endpoint
 async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
-        service: "miden-rust-service-with-escrow".to_string(),
+        service: "miden-rust-service-with-escrow-and-zk".to_string(),
     })
 }
 
-// Get account info endpoint
 async fn get_account_info(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<AccountInfoResponse>) {
@@ -482,7 +516,6 @@ async fn get_account_info(
     }
 }
 
-// Mint property endpoint
 async fn mint_property(
     State(state): State<AppState>,
     Json(payload): Json<MintPropertyRequest>,
@@ -552,7 +585,6 @@ async fn mint_property(
     }
 }
 
-// Get consumable notes endpoint
 async fn get_consumable_notes(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<ConsumableNotesResponse>) {
@@ -613,7 +645,6 @@ async fn get_consumable_notes(
     }
 }
 
-// Consume note endpoint
 async fn consume_note(
     State(state): State<AppState>,
     Json(payload): Json<ConsumeNoteRequest>,
@@ -675,7 +706,6 @@ async fn consume_note(
     }
 }
 
-// Transfer property endpoint
 async fn transfer_property(
     State(state): State<AppState>,
     Json(payload): Json<TransferPropertyRequest>,
@@ -738,7 +768,6 @@ async fn transfer_property(
     }
 }
 
-// Send tokens endpoint
 async fn send_tokens(
     State(state): State<AppState>,
     Json(payload): Json<SendTokensRequest>,
@@ -801,7 +830,6 @@ async fn send_tokens(
     }
 }
 
-// Get balance endpoint
 async fn get_balance(
     State(state): State<AppState>,
     axum::extract::Path(account_id): axum::extract::Path<String>,
@@ -867,7 +895,6 @@ async fn get_balance(
 // ESCROW ENDPOINTS
 // ============================================================================
 
-// POST /create-escrow - Create new escrow account
 async fn create_escrow(
     State(state): State<AppState>,
     Json(payload): Json<CreateEscrowRequest>,
@@ -894,7 +921,6 @@ async fn create_escrow(
         Ok(Ok(escrow)) => {
             info!("✅ Escrow created: escrow_id={}", escrow.escrow_account_id);
             
-            // Serialize AccountIds using Serializable trait
             let escrow_hex = format!("0x{}", hex::encode(escrow.escrow_account_id.to_bytes()));
             let buyer_hex = format!("0x{}", hex::encode(escrow.buyer_account_id.to_bytes()));
             let seller_hex = format!("0x{}", hex::encode(escrow.seller_account_id.to_bytes()));
@@ -925,7 +951,6 @@ async fn create_escrow(
     }
 }
 
-// POST /fund-escrow - Buyer funds the escrow
 async fn fund_escrow(
     State(state): State<AppState>,
     Json(payload): Json<FundEscrowRequest>,
@@ -1007,7 +1032,6 @@ async fn fund_escrow(
     }
 }
 
-// POST /release-escrow - Release funds to seller
 async fn release_escrow(
     State(state): State<AppState>,
     Json(payload): Json<ReleaseEscrowRequest>,
@@ -1089,7 +1113,6 @@ async fn release_escrow(
     }
 }
 
-// POST /refund-escrow - Refund to buyer
 async fn refund_escrow(
     State(state): State<AppState>,
     Json(payload): Json<RefundEscrowRequest>,
@@ -1159,6 +1182,178 @@ async fn refund_escrow(
         }
         Ok(Err(e)) => {
             error!("❌ Failed to refund escrow: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+        Err(_) => Json(serde_json::json!({
+            "success": false,
+            "error": "Internal communication error"
+        })),
+    }
+}
+
+// ============================================================================
+// ZK PROOF ENDPOINTS - ACCREDITATION
+// ============================================================================
+
+async fn generate_accreditation_proof(
+    State(state): State<AppState>,
+    Json(payload): Json<GenerateAccreditationProofRequest>,
+) -> Json<serde_json::Value> {
+    info!("Received generate accreditation proof request");
+    info!("   Net worth: ${} (will be HIDDEN in proof)", payload.net_worth);
+    info!("   Threshold: ${}", payload.threshold);
+
+    let (tx, rx) = oneshot::channel();
+    let cmd = ClientCommand::GenerateAccreditationProof {
+        net_worth: payload.net_worth,
+        threshold: payload.threshold,
+        response: tx,
+    };
+
+    if state.client_tx.send(cmd).await.is_err() {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Client task not available"
+        }));
+    }
+
+    match rx.await {
+        Ok(Ok(proof_data)) => {
+            info!("✅ ZK proof generated successfully");
+            Json(proof_data)
+        }
+        Ok(Err(e)) => {
+            error!("❌ Failed to generate proof: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+        Err(_) => Json(serde_json::json!({
+            "success": false,
+            "error": "Internal communication error"
+        })),
+    }
+}
+
+async fn verify_accreditation_proof(
+    State(state): State<AppState>,
+    Json(payload): Json<VerifyAccreditationProofRequest>,
+) -> Json<serde_json::Value> {
+    info!("Received verify accreditation proof request");
+    info!("   Verifying WITHOUT seeing private data...");
+
+    let (tx, rx) = oneshot::channel();
+    let cmd = ClientCommand::VerifyAccreditationProof {
+        proof: payload.proof,
+        program_hash: payload.program_hash,
+        public_inputs: payload.public_inputs,
+        response: tx,
+    };
+
+    if state.client_tx.send(cmd).await.is_err() {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Client task not available"
+        }));
+    }
+
+    match rx.await {
+        Ok(Ok(verification_result)) => {
+            info!("✅ Proof verification complete");
+            Json(verification_result)
+        }
+        Ok(Err(e)) => {
+            error!("❌ Failed to verify proof: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+        Err(_) => Json(serde_json::json!({
+            "success": false,
+            "error": "Internal communication error"
+        })),
+    }
+}
+
+// ============================================================================
+// ZK PROOF ENDPOINTS - JURISDICTION (NEW!)
+// ============================================================================
+
+async fn generate_jurisdiction_proof(
+    State(state): State<AppState>,
+    Json(payload): Json<GenerateJurisdictionProofRequest>,
+) -> Json<serde_json::Value> {
+    info!("Received generate jurisdiction proof request");
+    info!("   Country: {} (will be HIDDEN in proof)", payload.country_code);
+    info!("   Restricted: {:?}", payload.restricted_countries);
+
+    let (tx, rx) = oneshot::channel();
+    let cmd = ClientCommand::GenerateJurisdictionProof {
+        country_code: payload.country_code,
+        restricted_countries: payload.restricted_countries,
+        response: tx,
+    };
+
+    if state.client_tx.send(cmd).await.is_err() {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Client task not available"
+        }));
+    }
+
+    match rx.await {
+        Ok(Ok(proof_data)) => {
+            info!("✅ Jurisdiction ZK proof generated successfully");
+            Json(proof_data)
+        }
+        Ok(Err(e)) => {
+            error!("❌ Failed to generate jurisdiction proof: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+        Err(_) => Json(serde_json::json!({
+            "success": false,
+            "error": "Internal communication error"
+        })),
+    }
+}
+
+async fn verify_jurisdiction_proof(
+    State(state): State<AppState>,
+    Json(payload): Json<VerifyJurisdictionProofRequest>,
+) -> Json<serde_json::Value> {
+    info!("Received verify jurisdiction proof request");
+    info!("   Verifying WITHOUT seeing user's country...");
+
+    let (tx, rx) = oneshot::channel();
+    let cmd = ClientCommand::VerifyJurisdictionProof {
+        proof: payload.proof,
+        program_hash: payload.program_hash,
+        public_inputs: payload.public_inputs,
+        response: tx,
+    };
+
+    if state.client_tx.send(cmd).await.is_err() {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Client task not available"
+        }));
+    }
+
+    match rx.await {
+        Ok(Ok(verification_result)) => {
+            info!("✅ Jurisdiction proof verification complete");
+            Json(verification_result)
+        }
+        Ok(Err(e)) => {
+            error!("❌ Failed to verify jurisdiction proof: {}", e);
             Json(serde_json::json!({
                 "success": false,
                 "error": e

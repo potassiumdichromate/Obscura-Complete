@@ -1,66 +1,70 @@
-/**
- * Proof Routes - ZK Proof Management
- * 8 endpoints for proof generation and verification
- */
+// File: backend/src/routes/proofRoutes.js
+// UPDATED: Merged with ownership proofs and dashboard APIs
 
 const express = require('express');
 const router = express.Router();
 const proofController = require('../controllers/proofController');
 
-/**
- * @route   POST /api/v1/proofs/ownership
- * @desc    Generate ownership proof
- * @access  Public
- */
-router.post('/ownership', proofController.generateOwnershipProof);
+// NO AUTHENTICATION REQUIRED - FOR POC ONLY
 
-/**
- * @route   POST /api/v1/proofs/accreditation
- * @desc    Generate accreditation proof
- * @access  Public
- */
-router.post('/accreditation', proofController.generateAccreditationProof);
+// ============================================================================
+// ACCREDITATION PROOF ROUTES (EXISTING)
+// ============================================================================
 
-/**
- * @route   POST /api/v1/proofs/jurisdiction
- * @desc    Generate jurisdiction proof
- * @access  Public
- */
-router.post('/jurisdiction', proofController.generateJurisdictionProof);
+// Generate accreditation proof
+router.post('/generate-accreditation', proofController.generateAccreditationProof);
 
-/**
- * @route   POST /api/v1/proofs/verify
- * @desc    Verify single proof
- * @access  Public
- */
-router.post('/verify', proofController.verifyProof);
+// Get proofs (optionally filter by userIdentifier)
+router.get('/my-proofs', proofController.getMyProofs);
 
-/**
- * @route   POST /api/v1/proofs/batch-verify
- * @desc    Verify multiple proofs
- * @access  Public
- */
-router.post('/batch-verify', proofController.batchVerifyProofs);
+// Check accreditation proof requirement
+router.post('/check-requirement', proofController.checkProofRequirement);
 
-/**
- * @route   GET /api/v1/proofs/:id
- * @desc    Get proof details
- * @access  Public
- */
-router.get('/:id', proofController.getProof);
+// Clear all proofs (for testing)
+router.delete('/clear-all', proofController.clearAllProofs);
 
-/**
- * @route   GET /api/v1/proofs/user/:userId
- * @desc    Get all proofs for user
- * @access  Public
- */
-router.get('/user/:userId', proofController.getUserProofs);
+// ============================================================================
+// JURISDICTION PROOF ROUTES (EXISTING)
+// ============================================================================
 
-/**
- * @route   DELETE /api/v1/proofs/:id
- * @desc    Delete proof
- * @access  Owner only
- */
-router.delete('/:id', proofController.deleteProof);
+// Generate jurisdiction proof
+router.post('/generate-jurisdiction', proofController.generateJurisdictionProof);
+
+// Get jurisdiction proofs for user
+router.get('/jurisdiction', proofController.getJurisdictionProofs);
+
+// Check jurisdiction proof requirement
+router.post('/check-jurisdiction', proofController.checkJurisdictionRequirement);
+
+// ============================================================================
+// OWNERSHIP PROOF ROUTES (NEW!)
+// ============================================================================
+
+// Generate ownership proof
+router.post('/generate-ownership', proofController.generateOwnershipProof);
+
+// Verify ownership proof
+router.post('/verify-ownership', proofController.verifyOwnershipProof);
+
+// ============================================================================
+// DASHBOARD APIS (NEW!)
+// ============================================================================
+
+// Get public proof event log
+router.get('/events/public', proofController.getPublicProofEvents);
+
+// Get user's proof history (detailed)
+router.get('/history/my', proofController.getMyProofHistory);
+
+// Get proof verification result (public)
+router.get('/verification/:proofId', proofController.getProofVerificationResult);
+
+// Get platform proof statistics
+router.get('/statistics', proofController.getProofStatistics);
+
+// ============================================================================
+// NOTE: Get specific proof by ID should be LAST to avoid route conflicts
+// ============================================================================
+router.get('/:proofId', proofController.getProofById);
 
 module.exports = router;

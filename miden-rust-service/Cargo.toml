@@ -2,15 +2,16 @@
 name = "miden-rust-service"
 version = "0.1.0"
 edition = "2021"
-authors = ["FrameX Corporation <sidhanth@framex.io>"]
+authors = ["Obscura <sidhanth@Obscura.io>"]
 description = "Obscura × Miden: Privacy-preserving real estate tokenization service"
 
 [dependencies]
-# Miden Core Dependencies (v0.12)
-miden-client = { version = "0.12", features = ["testing", "tonic"] }
-miden-client-sqlite-store = { version = "0.12" }
-miden-lib = { version = "0.12", default-features = false }
-miden-objects = { version = "0.12", default-features = false, features = ["testing"] }
+# Miden Core Dependencies (Latest available on crates.io)
+miden-client = { version = "0.12.4", features = ["testing", "tonic"] }
+miden-client-sqlite-store = { version = "0.12.4" }
+miden-vm = "0.12.0"
+miden-lib = { version = "0.12.4", default-features = false }
+miden-objects = { version = "0.12.4", default-features = false, features = ["testing"] }
 miden-crypto = { version = "0.17.1", features = ["executable"] }
 miden-assembly = "0.18.3"
 
@@ -47,6 +48,7 @@ rand_chacha = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 hex = "0.4"
+base64 = "0.21"  # ← ADDED FOR ZK PROOFS (only change needed!)
 
 # HTTP Client (for backend integration)
 reqwest = { version = "0.12", features = ["json"] }
