@@ -10,7 +10,7 @@ const proofSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['accreditation', 'jurisdiction', 'income'],
+    enum: ['accreditation', 'jurisdiction', 'income', 'ownership'],
     required: true
   },
   proof: {

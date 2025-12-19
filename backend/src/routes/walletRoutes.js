@@ -1,6 +1,6 @@
 /**
  * Wallet Routes - Miden Wallet Management
- * 4 endpoints for wallet operations
+ * 5 endpoints for wallet operations (added funding)
  */
 
 const express = require('express');
@@ -34,5 +34,13 @@ router.get('/:address/balance', walletController.getBalance);
  * @access  Public
  */
 router.post('/sync', walletController.syncWallet);
+
+/**
+ * @route   POST /api/v1/wallet/fund
+ * @desc    Fund wallet with test tokens from faucet (NEW!)
+ * @access  Public
+ * @body    { accountId: string, amount: number }
+ */
+router.post('/fund', walletController.fundWallet);
 
 module.exports = router;

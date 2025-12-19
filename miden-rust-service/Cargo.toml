@@ -49,6 +49,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 hex = "0.4"
 base64 = "0.21"  # ← ADDED FOR ZK PROOFS (only change needed!)
+sha2 = "0.10"
 
 # HTTP Client (for backend integration)
 reqwest = { version = "0.12", features = ["json"] }

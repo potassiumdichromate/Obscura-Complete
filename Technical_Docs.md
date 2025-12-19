@@ -1,9 +1,5 @@
 # 🏗️ Obscura - Technical Design Document
 
-**Version:** 1.0  
-**Date:** December 2024  
-**Author:** FrameX Corporation
-
 ---
 
 ## 📋 Table of Contents
@@ -1279,4 +1275,3 @@ jobs:
 
 **Document Version:** 1.0  
 **Last Updated:** December 2024  
-**Author:** FrameX Corporation, Bangkok

@@ -47,11 +47,45 @@ connectDB().catch(err => {
 // Security headers
 app.use(helmet());
 
-// CORS configuration
+// ============================================================================
+// CORS CONFIGURATION - UPDATED FOR FRONTEND ON PORT 8080
+// ============================================================================
+
+// Define allowed origins
+const allowedOrigins = [
+  'http://localhost:3000',      // Original allowed origin
+  'http://localhost:8080',      // Obscura frontend (Vite)
+  'http://127.0.0.1:8080',      // Alternative localhost
+  'http://localhost:5173',      // Vite default port (fallback)
+  process.env.CORS_ORIGIN       // Environment variable (production)
+].filter(Boolean); // Remove undefined/null values
+
+// CORS configuration with multiple origins
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      logger.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600 // Cache preflight requests for 10 minutes
 }));
+
+// Handle preflight requests explicitly for all routes
+app.options('*', cors());
+
+// ============================================================================
+// BODY PARSING & RATE LIMITING
+// ============================================================================
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -68,6 +102,7 @@ app.use('/api/', limiter);
 app.use((req, res, next) => {
   logger.info(`${req.method} ${req.path}`, {
     ip: req.ip,
+    origin: req.get('origin'),
     userAgent: req.get('user-agent')
   });
   next();
@@ -121,7 +156,11 @@ app.get('/', (req, res) => {
       proofs: `${API_PREFIX}/proofs`,
       wallet: `${API_PREFIX}/wallet`
     },
-    documentation: '/docs'
+    documentation: '/docs',
+    cors: {
+      allowedOrigins: allowedOrigins.filter(o => o !== process.env.CORS_ORIGIN),
+      info: 'Frontend should be accessible on http://localhost:8080'
+    }
   });
 });
 
@@ -236,7 +275,13 @@ const server = app.listen(PORT, async () => {
   logger.info(`🌐 Port: ${PORT}`);
   logger.info(`🔗 Miden RPC: ${process.env.MIDEN_RPC_URL}`);
   logger.info(`📁 API Prefix: ${API_PREFIX}`);
-  logger.info(`🔐 CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
+  logger.info(`🔐 CORS Allowed Origins:`);
+  allowedOrigins.filter(o => o !== process.env.CORS_ORIGIN).forEach(origin => {
+    logger.info(`   ✅ ${origin}`);
+  });
+  if (process.env.CORS_ORIGIN) {
+    logger.info(`   ✅ ${process.env.CORS_ORIGIN} (from .env)`);
+  }
   
   // Initialize Miden client
   try {
@@ -251,6 +296,7 @@ const server = app.listen(PORT, async () => {
   logger.info('');
   logger.info('📚 API Documentation: http://localhost:' + PORT + '/docs');
   logger.info('🏥 Health Check: http://localhost:' + PORT + API_PREFIX + '/health');
+  logger.info('🎨 Frontend should be at: http://localhost:8080');
   logger.info('');
   logger.info('✅ Server ready to accept requests!');
 });

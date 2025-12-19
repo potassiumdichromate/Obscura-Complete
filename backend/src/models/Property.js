@@ -1,5 +1,6 @@
 // File: backend/src/models/Property.js
 // MongoDB schema for property listings with selective disclosure
+// UPDATED: Added consumeStatus tracking for background processing
 
 const mongoose = require('mongoose');
 
@@ -23,6 +24,10 @@ const propertySchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  ownershipProofId: {
+    type: String,
+    default: null
+  },
   
   // Blockchain references
   midenNoteId: {
@@ -32,6 +37,55 @@ const propertySchema = new mongoose.Schema({
   midenTransactionId: {
     type: String,
     default: null
+  },
+  consumeTransactionId: {
+    type: String,
+    default: null
+  },
+  
+  // ============================================================================
+  // NEW: Background consume status tracking
+  // ============================================================================
+  consumeStatus: {
+    type: String,
+    enum: ['pending', 'consuming', 'consumed', 'failed'],
+    default: 'pending',
+    index: true
+  },
+  consumeStartedAt: {
+    type: Date,
+    default: null
+  },
+  consumeCompletedAt: {
+    type: Date,
+    default: null
+  },
+  consumeError: {
+    type: String,
+    default: null
+  },
+  consumeRetries: {
+    type: Number,
+    default: 0
+  },
+  // Encryption data (optional - for encrypted properties)
+  encryptionData: {
+    key: {
+      type: String,
+      default: null
+    },
+    iv: {
+      type: String,
+      default: null
+    },
+    tag: {
+      type: String,
+      default: null
+    },
+    algorithm: {
+      type: String,
+      default: null
+    }
   },
   
   // Listing status
@@ -55,7 +109,7 @@ const propertySchema = new mongoose.Schema({
   },
   accreditationThreshold: {
     type: Number,
-    default: 1000000 // Default $1M
+    default: 1000000
   },
   requiresJurisdiction: {
     type: Boolean,
@@ -68,25 +122,21 @@ const propertySchema = new mongoose.Schema({
   
   // Selective disclosure rules
   visibilityRules: {
-    // Who can see the valuation
     valuation: {
       type: String,
       enum: ['public', 'accredited_only', 'verified_only'],
       default: 'accredited_only'
     },
-    // Who can see exact address
     address: {
       type: String,
       enum: ['public', 'accredited_only', 'verified_only'],
       default: 'verified_only'
     },
-    // Who can see documents
     documents: {
       type: String,
       enum: ['public', 'accredited_only', 'verified_only'],
       default: 'verified_only'
     },
-    // Who can see full property details
     fullDetails: {
       type: String,
       enum: ['public', 'accredited_only', 'verified_only'],
@@ -96,7 +146,6 @@ const propertySchema = new mongoose.Schema({
   
   // Property metadata (full details)
   metadata: {
-    // Basic info (usually public)
     propertyType: {
       type: String,
       enum: ['residential', 'commercial', 'industrial', 'land'],
@@ -110,8 +159,6 @@ const propertySchema = new mongoose.Schema({
       type: String,
       required: true
     },
-    
-    // Location info (selective disclosure)
     country: {
       type: String,
       required: true
@@ -132,14 +179,10 @@ const propertySchema = new mongoose.Schema({
       latitude: Number,
       longitude: Number
     },
-    
-    // Financial details (selective disclosure)
     valuation: {
       type: Number,
       required: true
     },
-    
-    // Physical details
     squareFeet: {
       type: Number,
       default: null
@@ -156,8 +199,6 @@ const propertySchema = new mongoose.Schema({
       type: Number,
       default: null
     },
-    
-    // Media
     images: {
       type: [String],
       default: []
@@ -166,20 +207,16 @@ const propertySchema = new mongoose.Schema({
       type: String,
       default: null
     },
-    
-    // Documents (IPFS CIDs)
     ipfsCid: {
       type: String,
       default: null
     },
     documents: [{
       name: String,
-      type: String, // 'deed', 'valuation', 'inspection', etc.
+      type: String,
       ipfsCid: String,
       uploadedAt: Date
     }],
-    
-    // Additional features
     features: {
       type: [String],
       default: []
@@ -243,25 +280,40 @@ const propertySchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Compound indexes for efficient queries
+// Compound indexes
 propertySchema.index({ status: 1, listedAt: -1 });
 propertySchema.index({ ownerAccountId: 1, status: 1 });
 propertySchema.index({ status: 1, price: 1 });
 propertySchema.index({ 'metadata.propertyType': 1, status: 1 });
 propertySchema.index({ 'metadata.city': 1, status: 1 });
 propertySchema.index({ requiresAccreditation: 1, requiresJurisdiction: 1 });
+propertySchema.index({ consumeStatus: 1 }); // NEW
 
-// Virtual for checking if property is available
+// Virtuals
 propertySchema.virtual('isAvailable').get(function() {
   return this.status === 'listed';
 });
 
-// Virtual for anonymized location
 propertySchema.virtual('anonymizedLocation').get(function() {
   return `${this.metadata.city}, ${this.metadata.country}`;
 });
 
-// Method to get public preview (no proofs needed)
+// ============================================================================
+// NEW METHODS for background consume
+// ============================================================================
+
+propertySchema.methods.isReadyForSettlement = function() {
+  return this.consumeStatus === 'consumed';
+};
+
+propertySchema.methods.canRetryConsume = function() {
+  return this.consumeStatus === 'failed' && this.consumeRetries < 3;
+};
+
+// ============================================================================
+// Existing methods
+// ============================================================================
+
 propertySchema.methods.getPublicPreview = function() {
   return {
     propertyId: this.propertyId,
@@ -271,7 +323,7 @@ propertySchema.methods.getPublicPreview = function() {
     price: this.price,
     location: this.anonymizedLocation,
     status: this.status,
-    images: this.metadata.images.slice(0, 2), // Only first 2 images
+    images: this.metadata.images.slice(0, 2),
     requiresAccreditation: this.requiresAccreditation,
     requiresJurisdiction: this.requiresJurisdiction,
     listedAt: this.listedAt,
@@ -279,19 +331,16 @@ propertySchema.methods.getPublicPreview = function() {
   };
 };
 
-// Method to get details based on proof level
 propertySchema.methods.getDetailsForUser = function(hasAccreditation, hasJurisdiction) {
   const verified = hasAccreditation && hasJurisdiction;
   const response = this.getPublicPreview();
   
-  // Check valuation visibility
   if (this.visibilityRules.valuation === 'public' ||
       (this.visibilityRules.valuation === 'accredited_only' && hasAccreditation) ||
       (this.visibilityRules.valuation === 'verified_only' && verified)) {
     response.valuation = this.metadata.valuation;
   }
   
-  // Check address visibility
   if (this.visibilityRules.address === 'public' ||
       (this.visibilityRules.address === 'accredited_only' && hasAccreditation) ||
       (this.visibilityRules.address === 'verified_only' && verified)) {
@@ -300,7 +349,6 @@ propertySchema.methods.getDetailsForUser = function(hasAccreditation, hasJurisdi
     response.coordinates = this.metadata.coordinates;
   }
   
-  // Check documents visibility
   if (this.visibilityRules.documents === 'public' ||
       (this.visibilityRules.documents === 'accredited_only' && hasAccreditation) ||
       (this.visibilityRules.documents === 'verified_only' && verified)) {
@@ -308,7 +356,6 @@ propertySchema.methods.getDetailsForUser = function(hasAccreditation, hasJurisdi
     response.ipfsCid = this.metadata.ipfsCid;
   }
   
-  // Check full details visibility
   if (this.visibilityRules.fullDetails === 'public' ||
       (this.visibilityRules.fullDetails === 'accredited_only' && hasAccreditation) ||
       (this.visibilityRules.fullDetails === 'verified_only' && verified)) {
@@ -323,7 +370,6 @@ propertySchema.methods.getDetailsForUser = function(hasAccreditation, hasJurisdi
     response.locked = false;
   }
   
-  // Add compliance requirements
   response.complianceRequirements = {
     accreditation: this.requiresAccreditation ? {
       required: true,
@@ -338,7 +384,6 @@ propertySchema.methods.getDetailsForUser = function(hasAccreditation, hasJurisdi
   return response;
 };
 
-// Method to track view
 propertySchema.methods.trackView = function(userIdentifier) {
   this.views += 1;
   if (userIdentifier && !this.uniqueViewers.includes(userIdentifier)) {

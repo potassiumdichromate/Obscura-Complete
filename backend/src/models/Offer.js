@@ -1,5 +1,5 @@
 // File: backend/src/models/Offer.js
-// MongoDB schema for property offers WITH PROOF TRACKING
+// MongoDB schema for property offers WITH PROOF TRACKING + BUYER FUNDING
 
 const mongoose = require('mongoose');
 
@@ -36,7 +36,7 @@ const offerSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'accepted', 'rejected', 'expired'],
+    enum: ['pending', 'accepted', 'rejected', 'expired', 'completed'],
     default: 'pending',
     index: true
   },
@@ -44,7 +44,11 @@ const offerSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  // NEW: Store verified proof references
+  escrowFundingTxId: {
+    type: String,
+    default: null
+  },
+  // Store verified proof references
   verifiedProofs: {
     accreditation: {
       proofId: {
@@ -75,6 +79,41 @@ const offerSchema = new mongoose.Schema({
         type: Date,
         default: null
       }
+    }
+  },
+  // NEW: Track buyer auto-funding
+  buyerFunding: {
+    mintTxId: {
+      type: String,
+      default: null
+    },
+    mintNoteId: {
+      type: String,
+      default: null
+    },
+    consumeTxId: {
+      type: String,
+      default: null
+    },
+    amount: {
+      type: Number,
+      default: null
+    },
+    timestamp: {
+      type: Date,
+      default: null
+    },
+    failed: {
+      type: Boolean,
+      default: false
+    },
+    error: {
+      type: String,
+      default: null
+    },
+    retried: {
+      type: Boolean,
+      default: false
     }
   },
   acceptedAt: {
@@ -135,6 +174,20 @@ offerSchema.virtual('proofsStillValid').get(function() {
 
   return accreditationValid && jurisdictionValid;
 });
+
+// Virtual to check if buyer was successfully funded
+offerSchema.virtual('isBuyerFunded').get(function() {
+  return this.buyerFunding && 
+         !this.buyerFunding.failed && 
+         this.buyerFunding.consumeTxId;
+});
+
+// Method to check if offer is ready for escrow
+offerSchema.methods.isReadyForEscrow = function() {
+  return this.status === 'pending' && 
+         this.proofsStillValid && 
+         (this.isBuyerFunded || !this.buyerFunding);
+};
 
 const Offer = mongoose.model('Offer', offerSchema);
 

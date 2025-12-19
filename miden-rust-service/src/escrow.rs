@@ -1,8 +1,9 @@
 // src/escrow.rs - Escrow System Implementation for Real Estate Transactions
-// Add this to your lib.rs as a module
+// UPDATED: Now accepts BOTH hex IDs and account names
 
 use anyhow::Result;
 use rand::RngCore;
+use miden_client::{Serializable, Deserializable};
 use miden_client::{
     account::{AccountBuilder, AccountId, AccountStorageMode, AccountType, component::BasicWallet},
     asset::FungibleAsset,
@@ -35,8 +36,49 @@ pub enum EscrowStatus {
     Disputed,
 }
 
+/// Helper function to parse account ID from hex string or name
+/// Accepts BOTH "alice"/"faucet" AND hex IDs like "0x24e4b0c8..."
+fn parse_account_id(
+    account_str: &str,
+    alice_id: Option<AccountId>,
+    faucet_id: Option<AccountId>,
+) -> Result<AccountId> {
+    tracing::info!("🔍 Parsing account: {}", account_str);
+    
+    // Try as account name first
+    match account_str {
+        "alice" => {
+            let id = alice_id.ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
+            tracing::info!("✅ Matched name 'alice' -> {}", id);
+            return Ok(id);
+        }
+        "faucet" => {
+            let id = faucet_id.ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?;
+            tracing::info!("✅ Matched name 'faucet' -> {}", id);
+            return Ok(id);
+        }
+        _ => {}
+    }
+
+    // Try as hex ID
+    let hex_str = account_str.strip_prefix("0x").unwrap_or(account_str);
+    
+    tracing::info!("🔄 Attempting to parse as hex ID...");
+    
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| anyhow::anyhow!("Failed to decode hex: {}", e))?;
+    
+    let account_id = AccountId::read_from_bytes(&bytes[..])
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize AccountId: {}", e))?;
+    
+    tracing::info!("✅ Parsed hex ID -> {}", account_id);
+    
+    Ok(account_id)
+}
+
 impl MidenClientWrapper {
     /// Create a new escrow account for a property transaction
+    /// UPDATED: Now accepts BOTH hex IDs and account names ("alice", "faucet")
     pub async fn create_escrow(
         &mut self,
         buyer_account_str: &str,
@@ -48,20 +90,21 @@ impl MidenClientWrapper {
         tracing::info!("   Seller: {}", seller_account_str);
         tracing::info!("   Amount: {}", amount);
 
-        // Get the actual accounts from the client
-        let buyer_account = if buyer_account_str == "alice" {
-            self.alice_account_id
-                .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?
-        } else {
-            return Err(anyhow::anyhow!("Unknown buyer account: {}", buyer_account_str));
-        };
+        // ✅ FIXED: Parse account IDs (accepts both hex and names)
+        let buyer_account = parse_account_id(
+            buyer_account_str,
+            self.alice_account_id,
+            self.faucet_account_id,
+        )?;
 
-        let seller_account = if seller_account_str == "faucet" {
-            self.faucet_account_id
-                .ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?
-        } else {
-            return Err(anyhow::anyhow!("Unknown seller account: {}", seller_account_str));
-        };
+        let seller_account = parse_account_id(
+            seller_account_str,
+            self.alice_account_id,
+            self.faucet_account_id,
+        )?;
+
+        tracing::info!("✅ Buyer account resolved: {}", buyer_account);
+        tracing::info!("✅ Seller account resolved: {}", seller_account);
 
         // Create escrow account (regular account that will hold funds)
         let mut init_seed = [0u8; 32];

@@ -1,26 +1,14 @@
 // File: backend/src/controllers/offerController.js
-// Business logic for offer management WITH ZK PROOF ENFORCEMENT
+// Business logic for offer management WITH ZK PROOF ENFORCEMENT + AUTO BOB FUNDING
+// ENHANCED VERSION: Auto-funds Bob when he creates an offer
 
 const Property = require('../models/Property');
 const Offer = require('../models/Offer');
 const Proof = require('../models/Proof');
-
-/**
- * Map account hex IDs to names that Rust service expects for escrow creation
- * CREATE escrow expects names ("alice", "faucet")
- * FUND/RELEASE escrow accepts hex IDs
- */
-function getAccountName(accountId) {
-  const accountMap = {
-    '0xe5338a1599d89110235dc6dbed059b': 'alice',
-    '0xc3f051797dd19b200823b24faaa4e9': 'faucet'
-  };
-  
-  return accountMap[accountId.toLowerCase()] || accountId;
-}
+const midenClient = require('../services/midenClient');
 
 class OfferController {
-  // Create new offer (WITH PROOF ENFORCEMENT!)
+  // Create new offer (WITH PROOF ENFORCEMENT + AUTO FUNDING!)
   async createOffer(req, res) {
     try {
       const { propertyId, buyerAccountId, sellerAccountId, offerPrice, message, userIdentifier } = req.body;
@@ -148,7 +136,67 @@ class OfferController {
 
       console.log(`✅ All compliance checks passed for buyer: ${userIdentifier || buyerAccountId}`);
 
-      // Create offer with verified proof references
+      // ============================================================================
+      // 💰 AUTO-FUND BOB: Mint and consume tokens for the buyer
+      // ============================================================================
+      
+      console.log(`💰 Auto-funding buyer (Bob) with tokens for escrow...`);
+      
+      let fundingResult = null;
+      try {
+        // Step 1: Mint tokens for Bob (amount = offer price + buffer)
+        const mintAmount = Math.ceil(offerPrice * 1.1); // 10% buffer
+        console.log(`   Minting ${mintAmount} tokens for buyer...`);
+        
+        const mintResult = await midenClient.createPropertyToken(
+          {
+            id: `FUNDING-${Date.now()}`,
+            ipfsCid: 'QmBuyerFunding',
+            type: 'token',
+            price: mintAmount
+          },
+          'bob' // Always mint to bob for demo
+        );
+
+        console.log(`✅ Tokens minted: ${mintResult.noteId}`);
+        console.log(`   TX: ${mintResult.transactionId}`);
+
+        // Step 2: Consume the note into Bob's vault
+        console.log(`   Consuming tokens into buyer's vault...`);
+        
+        const consumeResult = await midenClient.consumeNote(
+          mintResult.noteId,
+          'bob' // Consume to bob's account
+        );
+
+        console.log(`✅ Tokens consumed into vault: ${consumeResult.transactionId}`);
+
+        fundingResult = {
+          mintTxId: mintResult.transactionId,
+          mintNoteId: mintResult.noteId,
+          consumeTxId: consumeResult.transactionId,
+          amount: mintAmount,
+          timestamp: new Date()
+        };
+
+        console.log(`💰 Buyer successfully funded with ${mintAmount} tokens!`);
+
+      } catch (fundingError) {
+        console.error('⚠️  Auto-funding failed:', fundingError.message);
+        console.log('   Offer will be created, but buyer may need manual funding');
+        
+        // Don't fail the offer creation, just log the warning
+        fundingResult = {
+          failed: true,
+          error: fundingError.message,
+          timestamp: new Date()
+        };
+      }
+
+      // ============================================================================
+      // CREATE OFFER
+      // ============================================================================
+
       const offerId = `OFFER-${Date.now()}`;
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
@@ -162,7 +210,8 @@ class OfferController {
         status: 'pending',
         expiresAt,
         buyerUserIdentifier: userIdentifier || buyerAccountId,
-        verifiedProofs // Store proof references
+        verifiedProofs, // Store proof references
+        buyerFunding: fundingResult // Store funding info
       });
 
       await offer.save();
@@ -184,6 +233,17 @@ class OfferController {
           accreditationVerified: property.requiresAccreditation ? true : 'not required',
           jurisdictionVerified: property.requiresJurisdiction ? true : 'not required',
           proofDetails: verifiedProofs
+        },
+        funding: fundingResult?.failed ? {
+          status: 'failed',
+          message: 'Auto-funding failed. Manual funding may be required.',
+          error: fundingResult.error
+        } : {
+          status: 'success',
+          message: 'Buyer automatically funded with tokens',
+          mintTxId: fundingResult.mintTxId,
+          consumeTxId: fundingResult.consumeTxId,
+          amount: fundingResult.amount
         }
       });
     } catch (error) {
@@ -221,6 +281,7 @@ class OfferController {
           status: o.status,
           escrowId: o.escrowId,
           complianceVerified: o.verifiedProofs ? true : false,
+          buyerFunded: o.buyerFunding && !o.buyerFunding.failed,
           createdAt: o.createdAt,
           expiresAt: o.expiresAt
         }))
@@ -259,6 +320,7 @@ class OfferController {
           status: o.status,
           escrowId: o.escrowId,
           complianceVerified: o.verifiedProofs ? true : false,
+          buyerFunded: o.buyerFunding && !o.buyerFunding.failed,
           createdAt: o.createdAt
         }))
       });
@@ -296,6 +358,7 @@ class OfferController {
           status: o.status,
           escrowId: o.escrowId,
           complianceVerified: o.verifiedProofs ? true : false,
+          buyerFunded: o.buyerFunding && !o.buyerFunding.failed,
           createdAt: o.createdAt
         }))
       });
@@ -308,7 +371,7 @@ class OfferController {
     }
   }
 
-  // Accept offer (creates blockchain escrow) - WITH RE-VERIFICATION
+  // Accept offer (creates AND funds blockchain escrow) - WITH RE-VERIFICATION
   async acceptOffer(req, res) {
     try {
       const { offerId } = req.params;
@@ -381,37 +444,123 @@ class OfferController {
         console.log(`✅ Buyer compliance re-verified successfully`);
       }
 
-      // Map hex IDs to account names for escrow creation
-      const buyerName = getAccountName(offer.buyerAccountId);
-      const sellerName = getAccountName(offer.sellerAccountId);
+      // ============================================================================
+      // CHECK IF BUYER WAS AUTO-FUNDED
+      // ============================================================================
       
-      console.log(`🔒 Creating escrow: buyer=${buyerName}, seller=${sellerName}, amount=${offer.offerPrice}`);
+      if (offer.buyerFunding?.failed) {
+        console.log(`⚠️  Buyer was not auto-funded. Attempting manual funding...`);
+        
+        try {
+          // Retry funding now that we're accepting the offer
+          const mintAmount = Math.ceil(offer.offerPrice * 1.1);
+          
+          const mintResult = await midenClient.createPropertyToken(
+            {
+              id: `FUNDING-RETRY-${Date.now()}`,
+              ipfsCid: 'QmBuyerFundingRetry',
+              type: 'token',
+              price: mintAmount
+            },
+            'bob'
+          );
 
-      // Create blockchain escrow
-      const midenClient = require('../services/midenClient');
+          const consumeResult = await midenClient.consumeNote(
+            mintResult.noteId,
+            'bob'
+          );
+
+          offer.buyerFunding = {
+            mintTxId: mintResult.transactionId,
+            mintNoteId: mintResult.noteId,
+            consumeTxId: consumeResult.transactionId,
+            amount: mintAmount,
+            timestamp: new Date(),
+            retried: true
+          };
+
+          console.log(`✅ Buyer funding retry successful!`);
+        } catch (retryError) {
+          console.error('❌ Funding retry also failed:', retryError.message);
+          return res.status(500).json({
+            success: false,
+            error: 'Cannot accept offer: Buyer funding failed',
+            details: retryError.message,
+            suggestion: 'Please ensure buyer has sufficient funds before accepting'
+          });
+        }
+      }
+
+      // ============================================================================
+      // STEP 1: CREATE ESCROW
+      // ============================================================================
+      
+      console.log(`🔒 Creating escrow with hex IDs:`);
+      console.log(`   Buyer:  ${offer.buyerAccountId}`);
+      console.log(`   Seller: ${offer.sellerAccountId}`);
+      console.log(`   Amount: ${offer.offerPrice}`);
+
       const escrowResult = await midenClient.createEscrow(
-        buyerName,      // ✅ Pass account name instead of hex ID
-        sellerName,     // ✅ Pass account name instead of hex ID
+        offer.buyerAccountId,
+        offer.sellerAccountId,
         offer.offerPrice
       );
 
-      // Update offer
+      console.log(`✅ Escrow created: ${escrowResult.escrowAccountId}`);
+
+      // ============================================================================
+      // STEP 2: FUND THE ESCROW IMMEDIATELY
+      // ============================================================================
+      
+      console.log(`💰 Funding escrow with ${offer.offerPrice}...`);
+      
+      let fundResult;
+      try {
+        fundResult = await midenClient.fundEscrow({
+          escrowAccountId: escrowResult.escrowAccountId,
+          buyerAccountId: offer.buyerAccountId,
+          sellerAccountId: offer.sellerAccountId,
+          amount: offer.offerPrice
+        });
+        
+        console.log(`✅ Escrow funded! TX: ${fundResult.transactionId}`);
+      } catch (fundError) {
+        console.error('❌ Escrow funding failed:', fundError.message);
+        throw new Error(`Escrow funding failed: ${fundError.message}`);
+      }
+
+      // ============================================================================
+      // STEP 3: UPDATE OFFER
+      // ============================================================================
+
       offer.status = 'accepted';
-      offer.escrowId = escrowResult.escrow_id;
+      offer.escrowId = escrowResult.escrowAccountId || escrowResult.escrow_id;
+      offer.escrowFundingTxId = fundResult.transactionId;
       offer.acceptedAt = new Date();
       await offer.save();
 
       res.json({
         success: true,
-        message: 'Offer accepted - compliance verified ✅',
+        message: 'Offer accepted - escrow created and funded ✅',
         offer: {
           offerId: offer.offerId,
           status: offer.status,
           escrowId: offer.escrowId,
+          escrowFundingTxId: offer.escrowFundingTxId,
           acceptedAt: offer.acceptedAt,
           complianceVerified: true
         },
-        escrow: escrowResult
+        escrow: {
+          ...escrowResult,
+          status: 'funded',
+          fundingTx: fundResult.transactionId
+        },
+        funding: {
+          status: 'success',
+          autoFunded: !offer.buyerFunding?.retried,
+          mintTxId: offer.buyerFunding?.mintTxId,
+          consumeTxId: offer.buyerFunding?.consumeTxId
+        }
       });
     } catch (error) {
       console.error('Accept offer error:', error);
@@ -498,6 +647,8 @@ class OfferController {
           message: offer.message,
           complianceVerified: offer.verifiedProofs ? true : false,
           verifiedProofs: offer.verifiedProofs,
+          buyerFunded: offer.buyerFunding && !offer.buyerFunding.failed,
+          buyerFunding: offer.buyerFunding,
           createdAt: offer.createdAt,
           acceptedAt: offer.acceptedAt,
           rejectedAt: offer.rejectedAt,
@@ -513,7 +664,7 @@ class OfferController {
     }
   }
 
-  // NEW: Check if buyer can make offer (compliance pre-check)
+  // Check if buyer can make offer (compliance pre-check)
   async checkBuyerEligibility(req, res) {
     try {
       const { propertyId, userIdentifier } = req.query;

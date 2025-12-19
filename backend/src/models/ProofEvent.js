@@ -1,17 +1,19 @@
 // File: backend/src/models/ProofEvent.js
-// Public proof event log for transparency
+// Fixed ProofEvent model with proper proofId handling
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const proofEventSchema = new mongoose.Schema({
+  // Identity
   eventId: {
     type: String,
-    required: true,
     unique: true,
+    required: true,
     index: true
   },
   
-  // Event type
+  // Event Type
   type: {
     type: String,
     enum: ['proof_generated', 'proof_verified', 'proof_used'],
@@ -19,7 +21,7 @@ const proofEventSchema = new mongoose.Schema({
     index: true
   },
   
-  // Proof type
+  // Proof Type
   proofType: {
     type: String,
     enum: ['accreditation', 'jurisdiction', 'ownership'],
@@ -27,21 +29,21 @@ const proofEventSchema = new mongoose.Schema({
     index: true
   },
   
-  // Anonymized user identifier (hashed for privacy)
+  // Anonymized User (SHA256 hash of userIdentifier)
   userHash: {
     type: String,
     required: true,
     index: true
   },
   
-  // Proof ID reference
+  // Proof Reference
   proofId: {
     type: String,
     required: true,
     index: true
   },
   
-  // Verification result (for verified events)
+  // Verification Status
   verified: {
     type: Boolean,
     default: null
@@ -54,96 +56,152 @@ const proofEventSchema = new mongoose.Schema({
     index: true
   },
   
-  // Additional context (optional)
-  context: {
-    propertyId: {
-      type: String,
-      default: null
-    },
-    offerId: {
-      type: String,
-      default: null
-    }
-  },
-  
-  // Proof hash (NOT the proof itself - just a hash for reference)
+  // Proof Hash (for transparency without revealing proof)
   proofHash: {
     type: String,
     default: null
-  }
+  },
   
+  // Optional Context
+  context: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  }
 }, {
   timestamps: true
 });
 
-// Indexes for efficient queries
+// INDEXES
 proofEventSchema.index({ type: 1, timestamp: -1 });
 proofEventSchema.index({ proofType: 1, timestamp: -1 });
 proofEventSchema.index({ userHash: 1, timestamp: -1 });
-proofEventSchema.index({ timestamp: -1 });
+proofEventSchema.index({ proofId: 1 });
 
-// Static method to create proof generation event
-proofEventSchema.statics.logProofGeneration = async function(proofType, userIdentifier, proofId, proofHash) {
-  const crypto = require('crypto');
-  
-  const userHash = crypto.createHash('sha256').update(userIdentifier).digest('hex').substring(0, 16);
-  
-  const event = new this({
-    eventId: `EVT-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-    type: 'proof_generated',
-    proofType,
-    userHash,
-    proofId,
-    proofHash,
-    verified: null,
-    timestamp: new Date()
-  });
-  
-  await event.save();
-  return event;
+// STATIC METHODS
+
+/**
+ * Log proof generation event
+ */
+proofEventSchema.statics.logProofGeneration = async function(
+  proofType,
+  userIdentifier,
+  proofId,
+  proofHash,
+  verified = true
+) {
+  try {
+    // Generate event ID
+    const eventId = `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Hash user identifier (anonymize)
+    const userHash = crypto
+      .createHash('sha256')
+      .update(userIdentifier)
+      .digest('hex')
+      .substring(0, 16);
+    
+    // Create event
+    const event = new this({
+      eventId,
+      type: 'proof_generated',
+      proofType,
+      userHash,
+      proofId,  // ← FIXED: Now properly included
+      verified,
+      proofHash,
+      timestamp: new Date()
+    });
+    
+    await event.save();
+    
+    console.log(`✅ ProofEvent logged: ${eventId} (${proofType})`);
+    
+    return event;
+  } catch (error) {
+    console.error('❌ Failed to log proof generation:', error.message);
+    // Don't throw - logging failure shouldn't break proof generation
+    return null;
+  }
 };
 
-// Static method to create proof verification event
-proofEventSchema.statics.logProofVerification = async function(proofType, userIdentifier, proofId, verified, proofHash) {
-  const crypto = require('crypto');
-  
-  const userHash = crypto.createHash('sha256').update(userIdentifier).digest('hex').substring(0, 16);
-  
-  const event = new this({
-    eventId: `EVT-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-    type: 'proof_verified',
-    proofType,
-    userHash,
-    proofId,
-    proofHash,
-    verified,
-    timestamp: new Date()
-  });
-  
-  await event.save();
-  return event;
+/**
+ * Log proof verification event
+ */
+proofEventSchema.statics.logProofVerification = async function(
+  proofType,
+  userIdentifier,
+  proofId,
+  verified,
+  proofHash
+) {
+  try {
+    const eventId = `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const userHash = crypto
+      .createHash('sha256')
+      .update(userIdentifier)
+      .digest('hex')
+      .substring(0, 16);
+    
+    const event = new this({
+      eventId,
+      type: 'proof_verified',
+      proofType,
+      userHash,
+      proofId,  // ← FIXED
+      verified,
+      proofHash,
+      timestamp: new Date()
+    });
+    
+    await event.save();
+    
+    console.log(`✅ ProofEvent logged: ${eventId} (verification)`);
+    
+    return event;
+  } catch (error) {
+    console.error('❌ Failed to log proof verification:', error.message);
+    return null;
+  }
 };
 
-// Static method to create proof usage event
-proofEventSchema.statics.logProofUsage = async function(proofType, userIdentifier, proofId, context) {
-  const crypto = require('crypto');
-  
-  const userHash = crypto.createHash('sha256').update(userIdentifier).digest('hex').substring(0, 16);
-  
-  const event = new this({
-    eventId: `EVT-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-    type: 'proof_used',
-    proofType,
-    userHash,
-    proofId,
-    context,
-    timestamp: new Date()
-  });
-  
-  await event.save();
-  return event;
+/**
+ * Log proof usage event
+ */
+proofEventSchema.statics.logProofUsage = async function(
+  proofType,
+  userIdentifier,
+  proofId,
+  context = null
+) {
+  try {
+    const eventId = `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const userHash = crypto
+      .createHash('sha256')
+      .update(userIdentifier)
+      .digest('hex')
+      .substring(0, 16);
+    
+    const event = new this({
+      eventId,
+      type: 'proof_used',
+      proofType,
+      userHash,
+      proofId,  // ← FIXED
+      context,
+      timestamp: new Date()
+    });
+    
+    await event.save();
+    
+    console.log(`✅ ProofEvent logged: ${eventId} (usage)`);
+    
+    return event;
+  } catch (error) {
+    console.error('❌ Failed to log proof usage:', error.message);
+    return null;
+  }
 };
 
-const ProofEvent = mongoose.model('ProofEvent', proofEventSchema);
-
-module.exports = ProofEvent;
+module.exports = mongoose.model('ProofEvent', proofEventSchema);

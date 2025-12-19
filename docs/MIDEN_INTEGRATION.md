@@ -489,5 +489,3 @@ This project is ready for:
 - Faucet: https://faucet.testnet.polygon.technology/miden
 
 ---
-
-Built with 🔐 by FrameX Corporation

@@ -303,7 +303,7 @@ chmod +x scripts/deploy.sh
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/framex/obscura-miden-real.git
+git 
 cd obscura-miden-real
 
 # 2. Run deployment script
@@ -443,7 +443,5 @@ A complete, production-ready, privacy-preserving real estate marketplace on Mide
 
 ---
 
-Built with 🔐 by **FrameX Corporation**  
-*"Every Frame Matters, Every Proof Counts"*
 
 **Now featuring: REAL Miden Integration!** 🔥

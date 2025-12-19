@@ -274,12 +274,6 @@ async function testVerificationSystem() {
     console.log('   ✅ Database transactions for consistency');
     console.log('   ✅ Verification stats dashboard\n');
 
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('Built by: FrameX Corporation');
-    console.log('Feature: Property Verification System');
-    console.log('Status: Production Ready ✅');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
   } catch (error) {
     console.error('\n❌ Test failed:', error.response?.data || error.message);
     console.error('Details:', error.stack);

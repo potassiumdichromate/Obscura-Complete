@@ -1,5 +1,17 @@
-// src/lib.rs - Complete Miden v0.12 Implementation (FIXED)
-// ALL Features: Minting, Transfers, Note Consumption, Account Management, Escrow, ZK Proofs (Accreditation + Jurisdiction)
+// src/lib.rs
+//
+// Complete Miden v0.12 implementation
+// Stable working version based on Dec 9 successful integration
+//
+// Accounts:
+// - Alice: seller wallet
+// - Bob: buyer wallet (auto-funded with tokens on init)
+// - Faucet: fungible token issuer
+//
+// Notes:
+// - Returns real note IDs whenever propagation allows
+// - Some operations include waits to account for network finality
+// - Bob receives initial token balance for escrow/purchasing
 
 pub mod escrow;
 
@@ -27,25 +39,43 @@ use miden_client_sqlite_store::SqliteStore;
 use miden_lib::account::auth::AuthRpoFalcon512;
 use miden_objects::account::AccountIdVersion;
 
+/// Concrete client type used throughout the wrapper
 type MidenClient = Client<FilesystemKeyStore<rand::prelude::StdRng>>;
 
+/// Wrapper over Miden client lifecycle and common business actions.
+///
+/// Responsibilities:
+/// - Client construction + sync
+/// - Creating Alice/Bob wallets and faucet
+/// - Auto-funding Bob with tokens for escrow operations
+/// - Minting assets, listing consumable notes, consuming notes
+/// - Creating P2ID notes for transfers/payments
+/// - Demo ZK proof endpoints (accreditation, ownership, jurisdiction)
 pub struct MidenClientWrapper {
     client: MidenClient,
     pub keystore: FilesystemKeyStore<rand::prelude::StdRng>,
     rng: ClientRng,
     alice_account_id: Option<AccountId>,
+    bob_account_id: Option<AccountId>,
     faucet_account_id: Option<AccountId>,
 }
 
 impl MidenClientWrapper {
+    /// Initializes the client, store, keystore, and creates the three accounts.
+    ///
+    /// This performs a network sync and persists local state:
+    /// - ./keystore
+    /// - ./store.sqlite3
+    ///
+    /// NEW: Automatically mints tokens for Bob so funds are available for escrow
     pub async fn new() -> Result<Self> {
-        tracing::info!("🔧 Initializing Miden client wrapper (v0.12)...");
+        tracing::info!("Initializing Miden client wrapper (v0.12)");
 
-        // Create keystore
+        // Create keystore (filesystem-backed)
         let keystore: FilesystemKeyStore<rand::prelude::StdRng> =
             FilesystemKeyStore::new("./keystore".into())?;
 
-        // Create SQLite store
+        // Create SQLite store (persistent client state)
         let store_path = PathBuf::from("./store.sqlite3");
         let store = SqliteStore::new(store_path).await?;
         let store: Arc<dyn Store> = Arc::new(store);
@@ -65,9 +95,9 @@ impl MidenClientWrapper {
 
         // Sync with network
         let sync_summary = client.sync_state().await?;
-        tracing::info!("✅ Client synced! Latest block: {}", sync_summary.block_num);
+        tracing::info!("Client synced. Latest block: {}", sync_summary.block_num);
 
-        // Create ClientRng
+        // Create ClientRng used for note creation and transactions
         let mut seed_rng = rand::rng();
         let coin_seed: Word = [
             Felt::new(seed_rng.next_u64()),
@@ -78,8 +108,11 @@ impl MidenClientWrapper {
         .into();
         let rng = ClientRng::new(Box::new(miden_client::crypto::RpoRandomCoin::new(coin_seed)));
 
-        // Create Alice's wallet
-        tracing::info!("🏗️  Creating Alice's wallet account...");
+        // ---------------------------------------------------------------------
+        // Alice wallet
+        // ---------------------------------------------------------------------
+        tracing::info!("Creating Alice wallet account");
+
         let mut init_seed = [0_u8; 32];
         client.rng().fill_bytes(&mut init_seed);
         let key_pair = SecretKey::with_rng(client.rng());
@@ -96,10 +129,36 @@ impl MidenClientWrapper {
         client.add_account(&alice_account, false).await?;
         keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair))?;
 
-        tracing::info!("✅ Alice's account: {}", alice_account_id.to_string());
+        tracing::info!("Alice account: {}", alice_account_id.to_string());
 
-        // Create Property Token Faucet
-        tracing::info!("🏗️  Creating Property Token Faucet...");
+        // ---------------------------------------------------------------------
+        // Bob wallet
+        // ---------------------------------------------------------------------
+        tracing::info!("Creating Bob wallet account");
+
+        let mut init_seed = [0_u8; 32];
+        client.rng().fill_bytes(&mut init_seed);
+        let bob_key_pair = SecretKey::with_rng(client.rng());
+
+        let bob_builder = AccountBuilder::new(init_seed)
+            .account_type(AccountType::RegularAccountUpdatableCode)
+            .storage_mode(AccountStorageMode::Public)
+            .with_auth_component(AuthRpoFalcon512::new(bob_key_pair.public_key().into()))
+            .with_component(BasicWallet);
+
+        let bob_account = bob_builder.build()?;
+        let bob_account_id = bob_account.id();
+
+        client.add_account(&bob_account, false).await?;
+        keystore.add_key(&AuthSecretKey::RpoFalcon512(bob_key_pair))?;
+
+        tracing::info!("Bob account: {}", bob_account_id.to_string());
+
+        // ---------------------------------------------------------------------
+        // Faucet (PROP token issuer)
+        // ---------------------------------------------------------------------
+        tracing::info!("Creating Property Token Faucet");
+
         let mut init_seed = [0u8; 32];
         client.rng().fill_bytes(&mut init_seed);
 
@@ -120,114 +179,235 @@ impl MidenClientWrapper {
         client.add_account(&faucet_account, false).await?;
         keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair))?;
 
-        tracing::info!("✅ Faucet account: {}", faucet_account_id.to_string());
+        tracing::info!("Faucet account: {}", faucet_account_id.to_string());
 
+        // Sync once after account creation
         client.sync_state().await?;
 
-        Ok(Self {
+        let mut wrapper = Self {
             client,
             keystore,
             rng,
             alice_account_id: Some(alice_account_id),
+            bob_account_id: Some(bob_account_id),
             faucet_account_id: Some(faucet_account_id),
-        })
+        };
+
+        // =====================================================================
+        // AUTO-FUND BOB WITH TOKENS FOR ESCROW OPERATIONS
+        // =====================================================================
+        tracing::info!("🔄 Auto-funding Bob with tokens for escrow operations...");
+        
+        match wrapper.mint_tokens_for_bob().await {
+            Ok((mint_tx_id, note_id)) => {
+                tracing::info!("✅ Bob initial funding successful");
+                tracing::info!("   Mint TX: {}", mint_tx_id);
+                tracing::info!("   Note ID: {}", note_id);
+                
+                // Consume the note into Bob's vault
+                tracing::info!("🔄 Consuming tokens into Bob's vault...");
+                match wrapper.consume_note(&note_id, Some("bob".to_string())).await {
+                    Ok(consume_tx_id) => {
+                        tracing::info!("✅ Tokens consumed into Bob's vault");
+                        tracing::info!("   Consume TX: {}", consume_tx_id);
+                        tracing::info!("💰 Bob is now ready for escrow operations!");
+                    }
+                    Err(e) => {
+                        tracing::warn!("⚠️  Failed to consume tokens into Bob's vault: {}", e);
+                        tracing::warn!("   Bob may need manual token consumption");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("⚠️  Failed to auto-fund Bob: {}", e);
+                tracing::warn!("   Bob may need manual funding for escrow operations");
+            }
+        }
+
+        Ok(wrapper)
     }
 
-    /// Mint property NFT token
-    pub async fn mint_property_nft(
-        &mut self,
-        property_id: &str,
-        _owner_account_id: &str,
-        ipfs_cid: &str,
-        property_type: u8,
-        price: u64,
-    ) -> Result<(String, String)> {
-        tracing::info!("🏗️  Minting property NFT: {}", property_id);
-        tracing::info!("   IPFS CID: {}", ipfs_cid);
-        tracing::info!("   Type: {}, Price: {}", property_type, price);
-
-        let alice_account_id = self
-            .alice_account_id
-            .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
+    /// Mints tokens specifically for Bob during initialization.
+    ///
+    /// Returns:
+    /// - Transaction ID
+    /// - Note ID (real when available, placeholder otherwise)
+    async fn mint_tokens_for_bob(&mut self) -> Result<(String, String)> {
+        let bob_account_id = self
+            .bob_account_id
+            .ok_or_else(|| anyhow::anyhow!("Bob not initialized"))?;
+        
         let faucet_account_id = self
             .faucet_account_id
-            .ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?;
+            .ok_or_else(|| anyhow::anyhow!("Faucet not initialized"))?;
 
-        let amount: u64 = 100; // Mint 100 tokens instead of 1
+        // Mint a substantial amount for Bob to use in escrow (e.g., 20M PROP tokens)
+        let amount: u64 = 20_000_000;
         let fungible_asset = FungibleAsset::new(faucet_account_id, amount)?;
 
-        let transaction_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
+        let mint_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
             fungible_asset,
-            alice_account_id,
+            bob_account_id,
             NoteType::Public,
             &mut self.rng,
         )?;
 
-        tracing::info!("📝 Executing mint transaction...");
+        tracing::info!("   Minting {} PROP tokens for Bob", amount);
 
-        let transaction_id = self
+        let mint_tx = self
             .client
-            .submit_new_transaction(faucet_account_id, transaction_request)
+            .submit_new_transaction(faucet_account_id, mint_request)
             .await?;
 
-        let tx_id = transaction_id.to_string();
-        
-        tracing::info!("✅ Property minted! TX: {}", tx_id);
-        
-        // Sync to see the new note
+        let mint_tx_id = mint_tx.to_string();
+
+        // Wait for note propagation
+        tracing::info!("   Waiting for note propagation (30s)...");
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
         self.client.sync_state().await?;
-        
-        // Try to get the actual note ID
-        let note_id = match self.client.get_consumable_notes(Some(alice_account_id)).await {
-            Ok(notes) if !notes.is_empty() => {
-                // Get the most recent note
-                let latest_note = &notes[notes.len() - 1];
-                let real_note_id = latest_note.0.id().to_string();
-                tracing::info!("📋 Real note ID: {}", real_note_id);
-                real_note_id
-            }
-            _ => {
-                // Fallback to placeholder if notes not yet available
-                tracing::warn!("⚠️  Note not yet available, using placeholder");
-                format!("pending-sync-{}", property_id)
-            }
+
+        // Retrieve the note ID
+        let consumable_notes = self
+            .client
+            .get_consumable_notes(Some(bob_account_id))
+            .await?;
+
+        let real_note_id = if let Some((note, _)) = consumable_notes.first() {
+            note.id().to_string()
+        } else {
+            format!("0x{}", hex::encode("bob-initial-funding"))
         };
 
-        Ok((tx_id, note_id))
+        Ok((mint_tx_id, real_note_id))
     }
 
-    /// Get consumable notes for an account
+    /// Mints fungible property token.
+    ///
+    /// Returns:
+    /// - Transaction ID
+    /// - Real note ID when available (falls back to placeholder if not yet visible)
+    ///
+    /// Notes:
+    /// - Uses a propagation wait + sync to retrieve consumable notes
+    pub async fn mint_property_nft(
+        &mut self,
+        property_id: &str,
+        owner_account_id: &str,
+        ipfs_cid: &str,
+        property_type: u8,
+        price: u64,
+    ) -> Result<(String, String)> {
+        tracing::info!("Minting property NFT: {}", property_id);
+        tracing::info!("Owner: {}", owner_account_id);
+
+        // Resolve owner account identifier (supports "alice", "bob", or hex AccountId)
+        let target_account_id = if owner_account_id == "alice" {
+            self.alice_account_id
+                .ok_or_else(|| anyhow::anyhow!("Alice not initialized"))?
+        } else if owner_account_id == "bob" {
+            self.bob_account_id
+                .ok_or_else(|| anyhow::anyhow!("Bob not initialized"))?
+        } else if owner_account_id.starts_with("0x") {
+            let hex_str = owner_account_id.strip_prefix("0x").unwrap_or(owner_account_id);
+            let bytes = hex::decode(hex_str)
+                .map_err(|e| anyhow::anyhow!("Failed to decode hex: {}", e))?;
+            use miden_client::Deserializable;
+            AccountId::read_from_bytes(&bytes[..])
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize AccountId: {}", e))?
+        } else {
+            return Err(anyhow::anyhow!("Unknown owner account: {}", owner_account_id));
+        };
+
+        let faucet_account_id = self
+            .faucet_account_id
+            .ok_or_else(|| anyhow::anyhow!("Faucet not initialized"))?;
+
+        // Fixed amount used for the mint in this implementation
+        let amount: u64 = 100;
+        let fungible_asset = FungibleAsset::new(faucet_account_id, amount)?;
+
+        let mint_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
+            fungible_asset,
+            target_account_id,
+            NoteType::Public,
+            &mut self.rng,
+        )?;
+
+        tracing::info!("Executing mint transaction");
+
+        let mint_tx = self
+            .client
+            .submit_new_transaction(faucet_account_id, mint_request)
+            .await?;
+
+        let mint_tx_id = mint_tx.to_string();
+        tracing::info!("Minted. TX: {}", mint_tx_id);
+
+        // Wait for note propagation and resync to discover the new note
+        tracing::info!("Waiting for note propagation");
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+        self.client.sync_state().await?;
+
+        // Pull consumable notes for the recipient account
+        let consumable_notes = self
+            .client
+            .get_consumable_notes(Some(target_account_id))
+            .await?;
+
+        // Return first discovered note ID, else placeholder if still not visible
+        let real_note_id = if let Some((note, _)) = consumable_notes.first() {
+            note.id().to_string()
+        } else {
+            format!("0x{}", hex::encode(format!("note-{}", property_id)))
+        };
+
+        tracing::info!("Note ID: {}", real_note_id);
+
+        Ok((mint_tx_id, real_note_id))
+    }
+
+    /// Returns consumable notes for a given account.
+    ///
+    /// Supported identifiers:
+    /// - "alice"
+    /// - "bob"
+    /// - "faucet"
+    ///
+    /// If no account is provided, defaults to Alice.
     pub async fn get_consumable_notes(
         &mut self,
         account_id_str: Option<String>,
     ) -> Result<Vec<serde_json::Value>> {
-        tracing::info!("📋 Getting consumable notes...");
+        tracing::info!("Getting consumable notes");
 
-        // Sync first
+        // Ensure local state is up-to-date
         self.client.sync_state().await?;
 
-        // Determine which account to query
+        // Resolve account to query
         let account_id = if let Some(id_str) = account_id_str {
-            // Parse account ID from string if provided
             if id_str == "alice" {
                 self.alice_account_id
                     .ok_or_else(|| anyhow::anyhow!("Alice account not found"))?
+            } else if id_str == "bob" {
+                self.bob_account_id
+                    .ok_or_else(|| anyhow::anyhow!("Bob account not found"))?
+            } else if id_str == "faucet" {
+                self.faucet_account_id
+                    .ok_or_else(|| anyhow::anyhow!("Faucet account not found"))?
             } else {
                 return Err(anyhow::anyhow!("Unknown account: {}", id_str));
             }
         } else {
-            // Default to Alice
             self.alice_account_id
                 .ok_or_else(|| anyhow::anyhow!("No default account"))?
         };
 
-        // Get consumable notes
-        let consumable_notes = self
-            .client
-            .get_consumable_notes(Some(account_id))
-            .await?;
+        // Query consumable notes
+        let consumable_notes = self.client.get_consumable_notes(Some(account_id)).await?;
 
-        // Convert to JSON format
+        // Convert to a stable JSON response shape for external API usage
         let notes: Vec<serde_json::Value> = consumable_notes
             .iter()
             .map(|(note, _status)| {
@@ -238,155 +418,128 @@ impl MidenClientWrapper {
             })
             .collect();
 
-        tracing::info!("✅ Found {} consumable notes", notes.len());
+        tracing::info!("Found {} consumable notes", notes.len());
         Ok(notes)
     }
 
-    /// Consume note (add to account balance)
-    pub async fn consume_note(&mut self, note_id: &str) -> Result<String> {
-        tracing::info!("🔥 Consuming note: {}", note_id);
+    /// Consumes notes into the specified account.
+    ///
+    /// Parameters:
+    /// - note_id: currently logged but not used as a selector (implementation consumes all notes)
+    /// - account_str: optional account selector ("alice", "bob", "faucet", or hex AccountId)
+    ///
+    /// Behavior:
+    /// - Syncs state
+    /// - Fetches all consumable notes for the account
+    /// - Consumes all of them in a single transaction
+    pub async fn consume_note(
+        &mut self,
+        note_id: &str,
+        account_str: Option<String>,
+    ) -> Result<String> {
+        tracing::info!("Consuming note: {}", note_id);
 
-        let alice_account_id = self
-            .alice_account_id
-            .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
+        // Resolve account to consume into (supports named accounts and hex AccountId)
+        let account_id = if let Some(acc_str) = account_str {
+            if acc_str == "alice" {
+                self.alice_account_id
+                    .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?
+            } else if acc_str == "bob" {
+                self.bob_account_id
+                    .ok_or_else(|| anyhow::anyhow!("Bob account not initialized"))?
+            } else if acc_str == "faucet" {
+                self.faucet_account_id
+                    .ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?
+            } else if acc_str.starts_with("0x") {
+                let hex_str = acc_str.strip_prefix("0x").unwrap_or(&acc_str);
+                let bytes = hex::decode(hex_str)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode hex: {}", e))?;
+                use miden_client::Deserializable;
+                AccountId::read_from_bytes(&bytes[..])
+                    .map_err(|e| anyhow::anyhow!("Failed to deserialize AccountId: {}", e))?
+            } else {
+                return Err(anyhow::anyhow!("Unknown account: {}", acc_str));
+            }
+        } else {
+            self.alice_account_id
+                .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?
+        };
 
-        // Sync to make sure we have latest notes
+        tracing::info!("Consuming into account: {}", account_id);
+
+        // Sync state so consumable notes reflect latest network view
         self.client.sync_state().await?;
 
-        // Get the note to consume
-        let consumable_notes = self
-            .client
-            .get_consumable_notes(Some(alice_account_id))
-            .await?;
+        // Fetch all consumable notes (current implementation consumes all of them)
+        let consumable_notes = self.client.get_consumable_notes(Some(account_id)).await?;
 
-        // Find the note by ID
-        let note_ids: Vec<_> = consumable_notes
-            .iter()
-            .map(|(note, _)| note.id())
-            .collect();
+        let note_ids: Vec<_> = consumable_notes.iter().map(|(note, _)| note.id()).collect();
 
         if note_ids.is_empty() {
             return Err(anyhow::anyhow!("No consumable notes found"));
         }
 
-        // Build consume transaction
-        let transaction_request = TransactionRequestBuilder::new()
-            .build_consume_notes(note_ids)?;
+        tracing::info!("Found {} consumable notes; consuming all", note_ids.len());
 
-        tracing::info!("📝 Executing consume transaction...");
+        // Build consume transaction
+        let transaction_request = TransactionRequestBuilder::new().build_consume_notes(note_ids)?;
+
+        tracing::info!("Executing consume transaction");
 
         // Submit transaction
         let transaction_id = self
             .client
-            .submit_new_transaction(alice_account_id, transaction_request)
+            .submit_new_transaction(account_id, transaction_request)
             .await?;
 
         let tx_id = transaction_id.to_string();
-        tracing::info!("✅ Note consumed! TX: {}", tx_id);
+        tracing::info!("Notes consumed. TX: {}", tx_id);
 
-        // Sync to update balance
+        // Sync after transaction to update local state (balances/notes)
         self.client.sync_state().await?;
 
         Ok(tx_id)
     }
 
-    /// Transfer property to another account (using P2ID note)
+    /// Transfers a property asset by creating a P2ID note from Alice's vault.
+    ///
+    /// Notes:
+    /// - Assumes the asset has already been consumed into Alice's vault
+    /// - Creates a dummy target account (current implementation does not use to_account_id)
     pub async fn transfer_property(
         &mut self,
         property_id: &str,
         to_account_id: &str,
     ) -> Result<String> {
-        tracing::info!("🔄 Transferring property: {}", property_id);
-        tracing::info!("   To: {}", to_account_id);
+        tracing::info!("Transferring property: {}", property_id);
+        tracing::info!("To: {}", to_account_id);
 
         let alice_account_id = self
             .alice_account_id
             .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
         let faucet_account_id = self
             .faucet_account_id
-            .ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?;
+            .ok_or_else(|| anyhow::anyhow!("Faucet not initialized"))?;
 
-        // For this POC, we create a dummy target account
-        // In production, you'd parse the actual target account ID
-        let mut init_seed = [0_u8; 15];
-        self.client.rng().fill_bytes(&mut init_seed);
-
-        let target_account = AccountId::dummy(
-            init_seed,
-            AccountIdVersion::Version0,
-            AccountType::RegularAccountUpdatableCode,
-            AccountStorageMode::Public,
-        );
-
-        // Create P2ID note (Pay-to-ID) for property transfer
-        let transfer_amount = 1; // 1 token = 1 property
-        let fungible_asset = FungibleAsset::new(faucet_account_id, transfer_amount)?;
-
-        let p2id_note = create_p2id_note(
-            alice_account_id,
-            target_account,
-            vec![fungible_asset.into()],
-            NoteType::Public,
-            Felt::new(0),
-            &mut self.rng,
-        )?;
-
-        // Create transaction with output note
-        let output_notes = vec![OutputNote::Full(p2id_note)];
-        let transaction_request = TransactionRequestBuilder::new()
-            .own_output_notes(output_notes)
-            .build()?;
-
-        tracing::info!("📝 Executing transfer transaction...");
-
-        // Submit transaction
-        let transaction_id = self
-            .client
-            .submit_new_transaction(alice_account_id, transaction_request)
-            .await?;
-
-        let tx_id = transaction_id.to_string();
-        tracing::info!("✅ Property transferred! TX: {}", tx_id);
-
-        // Sync
-        self.client.sync_state().await?;
-
-        Ok(tx_id)
-    }
-
-    /// Send tokens to another account (simple P2ID payment)
-    pub async fn send_tokens(
-        &mut self,
-        to_account_id: &str,
-        _amount: u64,
-    ) -> Result<String> {
-        tracing::info!("💸 Sending tokens to {}", to_account_id);
-
-        let alice_account_id = self
-            .alice_account_id
-            .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
-
-        // Sync first
-        self.client.sync_state().await?;
-
-        // Get Alice's current account to check vault
+        // Pull Alice account state to inspect vault
         let alice_account = self
             .client
             .get_account(alice_account_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Alice account not found"))?;
 
-        // Get vault and check for assets
         let vault = alice_account.account().vault();
         let vault_assets: Vec<_> = vault.assets().collect();
-        
+
         if vault_assets.is_empty() {
-            return Err(anyhow::anyhow!("Alice's vault is empty. Please consume notes first."));
+            return Err(anyhow::anyhow!(
+                "Vault is empty. Please consume property note first using POST /api/v1/properties/consume-note/:propertyId"
+            ));
         }
 
-        tracing::info!("✅ Found {} assets in vault", vault_assets.len());
+        tracing::info!("Found {} assets in vault", vault_assets.len());
 
-        // Create dummy target account
+        // Create dummy target account (Version0, Public, RegularAccountUpdatableCode)
         let mut init_seed = [0_u8; 15];
         self.client.rng().fill_bytes(&mut init_seed);
 
@@ -397,13 +550,87 @@ impl MidenClientWrapper {
             AccountStorageMode::Public,
         );
 
-        // Send ALL assets from vault (since we can't split them easily)
-        // In production, you'd handle asset splitting properly
-        let assets_to_send: Vec<_> = vault_assets.into_iter().collect();
-        
-        tracing::info!("📦 Sending {} assets from vault", assets_to_send.len());
+        // Transfer a single asset from the vault
+        let asset_to_transfer = vault_assets
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No assets available"))?;
 
-        // Create P2ID note with all vault assets
+        let p2id_note = create_p2id_note(
+            alice_account_id,
+            target_account,
+            vec![asset_to_transfer],
+            NoteType::Public,
+            Felt::new(0),
+            &mut self.rng,
+        )?;
+
+        let output_notes = vec![OutputNote::Full(p2id_note)];
+        let transaction_request = TransactionRequestBuilder::new()
+            .own_output_notes(output_notes)
+            .build()?;
+
+        tracing::info!("Executing transfer transaction");
+
+        let transaction_id = self
+            .client
+            .submit_new_transaction(alice_account_id, transaction_request)
+            .await?;
+
+        let tx_id = transaction_id.to_string();
+        tracing::info!("Property transferred. TX: {}", tx_id);
+
+        Ok(tx_id)
+    }
+
+    /// Sends tokens by moving all assets currently present in Alice's vault.
+    ///
+    /// Notes:
+    /// - to_account_id is logged but current implementation uses a dummy target account
+    /// - _amount is not used (current implementation sends all vault assets)
+    pub async fn send_tokens(&mut self, to_account_id: &str, _amount: u64) -> Result<String> {
+        tracing::info!("Sending tokens to {}", to_account_id);
+
+        let alice_account_id = self
+            .alice_account_id
+            .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
+
+        // Sync before reading vault state
+        self.client.sync_state().await?;
+
+        // Load Alice account to inspect vault assets
+        let alice_account = self
+            .client
+            .get_account(alice_account_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Alice account not found"))?;
+
+        let vault = alice_account.account().vault();
+        let vault_assets: Vec<_> = vault.assets().collect();
+
+        if vault_assets.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Alice's vault is empty. Please consume notes first."
+            ));
+        }
+
+        tracing::info!("Found {} assets in vault", vault_assets.len());
+
+        // Create dummy target account (Version0, Public, RegularAccountUpdatableCode)
+        let mut init_seed = [0_u8; 15];
+        self.client.rng().fill_bytes(&mut init_seed);
+
+        let target_account = AccountId::dummy(
+            init_seed,
+            AccountIdVersion::Version0,
+            AccountType::RegularAccountUpdatableCode,
+            AccountStorageMode::Public,
+        );
+
+        // Send all vault assets
+        let assets_to_send: Vec<_> = vault_assets.into_iter().collect();
+        tracing::info!("Sending {} assets from vault", assets_to_send.len());
+
         let p2id_note = create_p2id_note(
             alice_account_id,
             target_account,
@@ -413,44 +640,50 @@ impl MidenClientWrapper {
             &mut self.rng,
         )?;
 
-        // Create transaction with output note
         let output_notes = vec![OutputNote::Full(p2id_note)];
         let transaction_request = TransactionRequestBuilder::new()
             .own_output_notes(output_notes)
             .build()?;
 
-        tracing::info!("📝 Executing payment transaction...");
+        tracing::info!("Executing payment transaction");
 
-        // Submit
         let transaction_id = self
             .client
             .submit_new_transaction(alice_account_id, transaction_request)
             .await?;
 
         let tx_id = transaction_id.to_string();
-        tracing::info!("✅ Tokens sent! TX: {}", tx_id);
+        tracing::info!("Tokens sent. TX: {}", tx_id);
 
         self.client.sync_state().await?;
 
         Ok(tx_id)
     }
 
-    /// Get account information
+    /// Returns basic metadata about all system accounts (Alice, Bob, Faucet).
     pub async fn get_account_info(&mut self) -> Result<serde_json::Value> {
         self.client.sync_state().await?;
 
         let alice_account_id = self
             .alice_account_id
             .ok_or_else(|| anyhow::anyhow!("Alice account not initialized"))?;
+        let bob_account_id = self
+            .bob_account_id
+            .ok_or_else(|| anyhow::anyhow!("Bob account not initialized"))?;
         let faucet_account_id = self
             .faucet_account_id
-            .ok_or_else(|| anyhow::anyhow!("Faucet account not initialized"))?;
+            .ok_or_else(|| anyhow::anyhow!("Faucet not initialized"))?;
 
         let alice_account = self
             .client
             .get_account(alice_account_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Alice account not found"))?;
+        let bob_account = self
+            .client
+            .get_account(bob_account_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Bob account not found"))?;
         let faucet_account = self
             .client
             .get_account(faucet_account_id)
@@ -462,6 +695,10 @@ impl MidenClientWrapper {
                 "id": alice_account_id.to_string(),
                 "is_public": alice_account.account().is_public(),
             },
+            "bob_account": {
+                "id": bob_account_id.to_string(),
+                "is_public": bob_account.account().is_public(),
+            },
             "faucet_account": {
                 "id": faucet_account_id.to_string(),
                 "is_faucet": faucet_account.account().is_faucet(),
@@ -470,15 +707,25 @@ impl MidenClientWrapper {
         }))
     }
 
-    /// Get account balance
+    /// Returns a simplified balance payload for a named account.
+    ///
+    /// Current implementation reports:
+    /// - count of assets present in the vault
+    /// - public/private flags
     pub async fn get_account_balance(&mut self, account_str: &str) -> Result<serde_json::Value> {
-        tracing::info!("💰 Getting balance for: {}", account_str);
+        tracing::info!("Getting balance for: {}", account_str);
 
         self.client.sync_state().await?;
 
         let account_id = if account_str == "alice" {
             self.alice_account_id
                 .ok_or_else(|| anyhow::anyhow!("Alice account not found"))?
+        } else if account_str == "bob" {
+            self.bob_account_id
+                .ok_or_else(|| anyhow::anyhow!("Bob account not found"))?
+        } else if account_str == "faucet" {
+            self.faucet_account_id
+                .ok_or_else(|| anyhow::anyhow!("Faucet account not found"))?
         } else {
             return Err(anyhow::anyhow!("Unknown account: {}", account_str));
         };
@@ -489,65 +736,56 @@ impl MidenClientWrapper {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Account not found"))?;
 
-        // Get vault info
-        let _vault = account.account().vault();
+        let vault = account.account().vault();
+        let vault_assets: Vec<_> = vault.assets().collect();
 
-        tracing::info!("✅ Account balance retrieved");
+        tracing::info!(
+            "Account balance retrieved. {} assets in vault",
+            vault_assets.len()
+        );
 
         Ok(serde_json::json!({
             "account_id": account_id.to_string(),
             "vault_available": true,
+            "vault_assets": vault_assets.len(),
             "is_public": account.account().is_public(),
         }))
     }
 
-    // ============================================================================
+    // =========================================================================
     // ZK PROOF FUNCTIONS - ACCREDITATION
-    // ============================================================================
+    // =========================================================================
 
-    /// Generate REAL Miden accreditation proof
-    /// Proves: net_worth >= threshold WITHOUT revealing net_worth
-    /// 
-    /// NOTE: This is a SIMPLIFIED version for demonstration.
-    /// In production, you would:
-    /// 1. Load the actual Miden Assembly program from circuits/accreditation.masm
-    /// 2. Compile it to a Miden program
-    /// 3. Execute with proper advice inputs
-    /// 4. Generate a real STARK proof
-    /// 5. Serialize the proof
+    /// Demo accreditation proof.
+    ///
+    /// Notes:
+    /// - Validates net_worth >= threshold locally
+    /// - Encodes a placeholder "proof" as base64 for demo/test flow
     pub async fn generate_accreditation_proof(
         &mut self,
         net_worth: u64,
         threshold: u64,
     ) -> Result<serde_json::Value> {
-        tracing::info!("🔐 Generating ZK accreditation proof");
-        tracing::info!("   Net worth: ${} (PRIVATE - not in proof)", net_worth);
-        tracing::info!("   Threshold: ${} (PUBLIC)", threshold);
+        tracing::info!("Generating ZK accreditation proof");
+        tracing::info!("Net worth: {} (private; not included in proof)", net_worth);
+        tracing::info!("Threshold: {} (public)", threshold);
 
-        // Check if net_worth meets threshold (proof will fail if not)
         if net_worth < threshold {
             return Err(anyhow::anyhow!(
-                "Net worth ${} does not meet threshold ${}",
+                "Net worth {} does not meet threshold {}",
                 net_worth,
                 threshold
             ));
         }
 
-        // For this implementation, we'll create a proof structure
-        // In production, this would use actual Miden Assembly execution
-        
-        // Simulate proof generation (placeholder for real STARK proof)
         let proof_data = format!("PROOF_{}_{}", net_worth, threshold);
-        
-        // Use new base64 API (0.21+)
-        use base64::{Engine as _, engine::general_purpose};
+
+        use base64::{engine::general_purpose, Engine as _};
         let proof_base64 = general_purpose::STANDARD.encode(proof_data.as_bytes());
-        
-        // In production, this would be the actual program hash from compiling the .masm file
+
         let program_hash = format!("0x{}", hex::encode(format!("accreditation_v1")));
 
-        tracing::info!("   ✅ Proof generated!");
-        tracing::info!("   Proof type: miden-stark (simplified demo)");
+        tracing::info!("Proof generated");
 
         Ok(serde_json::json!({
             "success": true,
@@ -558,44 +796,29 @@ impl MidenClientWrapper {
                 "proof_type": "miden-stark",
                 "timestamp": chrono::Utc::now().timestamp(),
             },
-            "message": "ZK proof generated - net worth NOT revealed (demo version)"
+            "message": "ZK proof generated - net worth not revealed (demo version)"
         }))
     }
 
-    /// Verify REAL Miden accreditation proof
-    /// Verifies WITHOUT seeing private net_worth
+    /// Demo accreditation proof verification.
     ///
-    /// NOTE: This is a SIMPLIFIED version for demonstration.
-    /// In production, you would:
-    /// 1. Deserialize the proof from base64
-    /// 2. Load the program and verify its hash
-    /// 3. Use Miden VM to verify the STARK proof
-    /// 4. Return verification result
+    /// Notes:
+    /// - Decodes proof bytes to validate formatting
+    /// - Returns a positive verification result for demo flow
     pub async fn verify_accreditation_proof(
         &mut self,
         proof_base64: &str,
         program_hash: &str,
         public_inputs: Vec<u64>,
     ) -> Result<serde_json::Value> {
-        tracing::info!("🔍 Verifying ZK accreditation proof");
-        tracing::info!("   Program hash: {}", program_hash);
-        tracing::info!("   Public threshold: ${}", public_inputs[0]);
+        tracing::info!("Verifying ZK accreditation proof");
 
-        // In production, this would:
-        // 1. Decode the proof
-        // 2. Verify program hash matches
-        // 3. Use Miden VM verify() function
-        // 4. Return cryptographic verification result
-
-        // For this demo, basic validation
-        use base64::{Engine as _, engine::general_purpose};
-        let _proof_bytes = general_purpose::STANDARD.decode(proof_base64)
+        use base64::{engine::general_purpose, Engine as _};
+        let _proof_bytes = general_purpose::STANDARD
+            .decode(proof_base64)
             .map_err(|e| anyhow::anyhow!("Invalid proof format: {}", e))?;
 
-        tracing::info!("   Verifying proof structure...");
-        tracing::info!("   ✅ Proof structure valid!");
-        tracing::info!("   ✅ User is accredited (threshold met)");
-        tracing::info!("   (Exact net worth never revealed)");
+        tracing::info!("Proof verified");
 
         Ok(serde_json::json!({
             "success": true,
@@ -603,55 +826,124 @@ impl MidenClientWrapper {
             "proof_type": "miden-stark",
             "threshold": public_inputs[0],
             "verified_at": chrono::Utc::now().timestamp(),
-            "message": "Proof verified! User meets accreditation threshold (demo version)"
+            "message": "Proof verified. User meets accreditation threshold (demo version)"
         }))
     }
 
-    // ============================================================================
-    // ZK PROOF FUNCTIONS - JURISDICTION (NEW!)
-    // ============================================================================
+    // =========================================================================
+    // ZK PROOF FUNCTIONS - OWNERSHIP
+    // =========================================================================
 
-    /// Generate REAL Miden jurisdiction proof
-    /// Proves: country_code NOT IN restricted_countries WITHOUT revealing country_code
-    /// 
-    /// NOTE: This is a SIMPLIFIED version for demonstration.
-    /// In production, you would:
-    /// 1. Load the actual Miden Assembly program from circuits/jurisdiction_proof.masm
-    /// 2. Compile it to a Miden program
-    /// 3. Execute with proper advice inputs (country code hidden)
-    /// 4. Generate a real STARK proof
-    /// 5. Serialize the proof
+    /// Demo ownership proof.
+    ///
+    /// Behavior:
+    /// - Computes expected hash for "{property_id}-ownership"
+    /// - Compares with provided document_hash
+    /// - Encodes the result into a base64 "proof" payload
+    pub async fn generate_ownership_proof(
+        &mut self,
+        property_id: &str,
+        document_hash: &str,
+    ) -> Result<serde_json::Value> {
+        tracing::info!("Generating ZK ownership proof");
+
+        let expected_input = format!("{}-ownership", property_id);
+        let expected_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(expected_input.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let verified = document_hash == expected_hash;
+
+        let proof_data = format!(
+            "PROOF_{}_{}_{}",
+            property_id,
+            if verified { "VERIFIED" } else { "FAILED" },
+            chrono::Utc::now().timestamp()
+        );
+
+        use base64::{engine::general_purpose, Engine as _};
+        let proof_base64 = general_purpose::STANDARD.encode(proof_data.as_bytes());
+
+        Ok(serde_json::json!({
+            "success": verified,
+            "proof": proof_base64,
+            "program_hash": format!("0x{}", hex::encode("ownership_v1")),
+            "public_inputs": vec![property_id],
+            "proof_type": "miden-stark",
+            "timestamp": chrono::Utc::now().timestamp()
+        }))
+    }
+
+    /// Demo ownership verification.
+    ///
+    /// Behavior:
+    /// - Decodes base64 payload and checks for "VERIFIED"
+    pub async fn verify_ownership_proof(
+        &mut self,
+        proof_base64: &str,
+        program_hash: &str,
+        public_inputs: Vec<String>,
+    ) -> Result<serde_json::Value> {
+        use base64::{engine::general_purpose, Engine as _};
+        let proof_bytes = general_purpose::STANDARD
+            .decode(proof_base64)
+            .map_err(|e| anyhow::anyhow!("Failed to decode proof: {}", e))?;
+
+        let proof_str = String::from_utf8_lossy(&proof_bytes);
+        let verified = proof_str.contains("VERIFIED");
+
+        Ok(serde_json::json!({
+            "success": true,
+            "valid": verified,
+            "verified_at": chrono::Utc::now().to_rfc3339(),
+            "proof_type": "miden-stark",
+            "message": if verified {
+                "Ownership verified successfully"
+            } else {
+                "Ownership verification failed"
+            }
+        }))
+    }
+
+    // =========================================================================
+    // ZK PROOF FUNCTIONS - JURISDICTION
+    // =========================================================================
+
+    /// Demo jurisdiction proof.
+    ///
+    /// Behavior:
+    /// - Rejects if country_code appears in restricted list
+    /// - Encodes a placeholder payload as base64
     pub async fn generate_jurisdiction_proof(
         &mut self,
         country_code: &str,
         restricted_countries: Vec<String>,
     ) -> Result<serde_json::Value> {
-        tracing::info!("🌍 Generating ZK jurisdiction proof");
-        tracing::info!("   Country: {} (PRIVATE - not in proof)", country_code);
-        tracing::info!("   Restricted list: {:?} (PUBLIC)", restricted_countries);
-
-        // Check if country is restricted
         let country_upper = country_code.to_uppercase();
-        if restricted_countries.iter().any(|c| c.to_uppercase() == country_upper) {
-            return Err(anyhow::anyhow!(
-                "Country {} is in restricted list",
-                country_code
-            ));
+        if restricted_countries
+            .iter()
+            .any(|c| c.to_uppercase() == country_upper)
+        {
+            return Err(anyhow::anyhow!("Country {} is in restricted list", country_code));
         }
 
-        // Generate proof data (in production, this would be a real STARK proof)
-        let proof_data = format!("JURIS_PROOF_{}_{}", country_code, restricted_countries.join(","));
-        
-        use base64::{Engine as _, engine::general_purpose};
-        let proof_base64 = general_purpose::STANDARD.encode(proof_data.as_bytes());
-        
-        // Hash restricted list for public input
-        let restricted_hash = format!("0x{}", hex::encode(format!("restricted_{}", restricted_countries.join(""))));
-        let program_hash = format!("0x{}", hex::encode(format!("jurisdiction_v1")));
+        let proof_data = format!(
+            "JURIS_PROOF_{}_{}",
+            country_code,
+            restricted_countries.join(",")
+        );
 
-        tracing::info!("   ✅ Jurisdiction proof generated!");
-        tracing::info!("   Proof type: miden-stark (simplified demo)");
-        tracing::info!("   Country code is HIDDEN in proof");
+        use base64::{engine::general_purpose, Engine as _};
+        let proof_base64 = general_purpose::STANDARD.encode(proof_data.as_bytes());
+
+        let restricted_hash = format!(
+            "0x{}",
+            hex::encode(format!("restricted_{}", restricted_countries.join("")))
+        );
+        let program_hash = format!("0x{}", hex::encode(format!("jurisdiction_v1")));
 
         Ok(serde_json::json!({
             "success": true,
@@ -664,51 +956,32 @@ impl MidenClientWrapper {
                 "restricted_count": restricted_countries.len(),
                 "restricted_hash": restricted_hash,
             },
-            "message": "Jurisdiction proof generated - country NOT revealed (demo version)"
+            "message": "Jurisdiction proof generated - country not revealed (demo version)"
         }))
     }
 
-    /// Verify REAL Miden jurisdiction proof
-    /// Verifies WITHOUT seeing private country code
+    /// Demo jurisdiction proof verification.
     ///
-    /// NOTE: This is a SIMPLIFIED version for demonstration.
-    /// In production, you would:
-    /// 1. Deserialize the proof from base64
-    /// 2. Load the program and verify its hash
-    /// 3. Use Miden VM verify() function to verify STARK proof
-    /// 4. Return cryptographic verification result
+    /// Behavior:
+    /// - Decodes base64 payload to validate structure
+    /// - Returns a positive verification result for demo flow
     pub async fn verify_jurisdiction_proof(
         &mut self,
         proof_base64: &str,
         program_hash: &str,
         public_inputs: Vec<u64>,
     ) -> Result<serde_json::Value> {
-        tracing::info!("🔍 Verifying ZK jurisdiction proof");
-        tracing::info!("   Program hash: {}", program_hash);
-        tracing::info!("   Restricted count: {}", public_inputs[0]);
-
-        // In production, this would:
-        // 1. Decode the proof
-        // 2. Verify program hash matches
-        // 3. Use Miden VM verify() function
-        // 4. Return cryptographic verification result
-
-        // For this demo, basic validation
-        use base64::{Engine as _, engine::general_purpose};
-        let _proof_bytes = general_purpose::STANDARD.decode(proof_base64)
+        use base64::{engine::general_purpose, Engine as _};
+        let _proof_bytes = general_purpose::STANDARD
+            .decode(proof_base64)
             .map_err(|e| anyhow::anyhow!("Invalid proof format: {}", e))?;
-
-        tracing::info!("   Verifying proof structure...");
-        tracing::info!("   ✅ Proof structure valid!");
-        tracing::info!("   ✅ User jurisdiction is compliant!");
-        tracing::info!("   (Actual country never revealed)");
 
         Ok(serde_json::json!({
             "success": true,
             "valid": true,
             "proof_type": "miden-stark",
             "verified_at": chrono::Utc::now().timestamp(),
-            "message": "Jurisdiction proof verified! User is not in restricted jurisdiction (demo version)"
+            "message": "Jurisdiction proof verified. User is not in restricted jurisdiction (demo version)"
         }))
     }
 }

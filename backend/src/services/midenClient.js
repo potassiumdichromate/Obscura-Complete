@@ -1,5 +1,5 @@
 /**
- * Miden Client Service - v0.12 with Escrow + ZK Proofs (Accreditation + Jurisdiction)
+ * Miden Client Service - v0.12 with Escrow + ZK Proofs (Accreditation + Jurisdiction + Ownership)
  * 
  * Connects Node.js backend to Rust Miden service
  * Architecture: Node.js (Express) → Rust (Axum) → Miden Testnet
@@ -10,7 +10,7 @@ const axios = require('axios');
 class MidenClientService {
   constructor() {
     this.rustServiceUrl = process.env.MIDEN_RUST_SERVICE_URL || 'http://localhost:3000';
-    this.timeout = 180000; // 180 second timeout
+    this.timeout = 600000; // 10 min
     this.explorerUrl = 'https://testnet.midenscan.com';
     
     this.client = axios.create({
@@ -57,6 +57,7 @@ class MidenClientService {
           success: true,
           accounts: response.data.data,
           alice_account: response.data.data.alice_account,
+          bob_account: response.data.data.bob_account,
           faucet_account: response.data.data.faucet_account
         };
       }
@@ -71,6 +72,7 @@ class MidenClientService {
   async createPropertyToken(propertyData, ownerAccountId = 'alice') {
     try {
       console.log('🏗️  Creating property token:', propertyData.id);
+      console.log('   Owner:', ownerAccountId);
       
       const payload = {
         property_id: propertyData.id,
@@ -92,6 +94,7 @@ class MidenClientService {
           transactionId: response.data.transaction_id,
           noteId: response.data.note_id,
           propertyId: propertyData.id,
+          ownerAccountId: ownerAccountId,
           explorerUrl: `${this.explorerUrl}/tx/${response.data.transaction_id}`
         };
       }
@@ -106,6 +109,9 @@ class MidenClientService {
   async getConsumableNotes(accountId = null) {
     try {
       console.log('📋 Getting consumable notes...');
+      if (accountId) {
+        console.log(`   For account: ${accountId}`);
+      }
       
       const response = await this.client.get('/get-consumable-notes', {
         params: accountId ? { account_id: accountId } : {}
@@ -126,13 +132,24 @@ class MidenClientService {
     }
   }
 
-  async consumeNote(noteId) {
+  // ✅ FIXED: Now accepts accountId parameter
+  async consumeNote(noteId, accountId = null) {
     try {
       console.log('🔥 Consuming note:', noteId);
+      if (accountId) {
+        console.log('   For account:', accountId);
+      }
       
-      const response = await this.client.post('/consume-note', {
+      const payload = {
         note_id: noteId
-      });
+      };
+      
+      // ✅ Add account_id if provided
+      if (accountId) {
+        payload.account_id = accountId;
+      }
+      
+      const response = await this.client.post('/consume-note', payload);
       
       if (response.data.success) {
         console.log('✅ Note consumed!');
@@ -420,7 +437,7 @@ class MidenClientService {
   }
 
   // ============================================================================
-  // ZK PROOF OPERATIONS - JURISDICTION (NEW!)
+  // ZK PROOF OPERATIONS - JURISDICTION
   // ============================================================================
 
   async generateJurisdictionProof(countryCode, restrictedCountries = ['US', 'KP', 'IR']) {
@@ -494,6 +511,82 @@ class MidenClientService {
     } catch (error) {
       console.error('Verify jurisdiction proof failed:', error.message);
       throw new Error(`Failed to verify jurisdiction proof: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
+  // ZK PROOF OPERATIONS - OWNERSHIP (NEW!)
+  // ============================================================================
+
+  async generateOwnershipProof(propertyId, documentHash) {
+    try {
+      console.log('🏠 Generating ownership proof...');
+      console.log(`   Property: ${propertyId} (public)`);
+      console.log(`   Document hash: ${documentHash.substring(0, 20)}... (PRIVATE - stays hidden)`);
+      
+      const response = await this.client.post('/generate-ownership-proof', {
+        property_id: propertyId,
+        document_hash: documentHash
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Ownership proof generation failed');
+      }
+
+      console.log('✅ ZK ownership proof generated successfully!');
+      console.log('   ℹ️  Your document hash is NOT revealed in the proof');
+
+      return {
+        success: true,
+        proof: response.data.proof,
+        programHash: response.data.program_hash,
+        publicInputs: response.data.public_inputs,
+        proofType: response.data.proof_type,
+        timestamp: response.data.timestamp
+      };
+    } catch (error) {
+      console.error('Generate ownership proof failed:', error.message);
+      
+      if (error.response?.status === 422) {
+        throw new Error('Invalid: Ownership verification failed');
+      }
+      
+      throw new Error(`Failed to generate ownership proof: ${error.message}`);
+    }
+  }
+
+  async verifyOwnershipProof(proof) {
+    try {
+      console.log('🔍 Verifying ownership proof...');
+      
+      const response = await this.client.post('/verify-ownership-proof', {
+        proof: proof.proof,
+        program_hash: proof.programHash,
+        public_inputs: proof.publicInputs
+      });
+
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Ownership proof verification failed');
+      }
+
+      const isValid = response.data.valid;
+      
+      if (isValid) {
+        console.log('✅ Ownership proof VERIFIED! User owns the property.');
+      } else {
+        console.log('❌ Ownership proof verification FAILED');
+      }
+
+      return {
+        success: true,
+        valid: response.data.valid,
+        verifiedAt: response.data.verified_at,
+        proofType: response.data.proof_type,
+        message: response.data.message
+      };
+    } catch (error) {
+      console.error('Verify ownership proof failed:', error.message);
+      throw new Error(`Failed to verify ownership proof: ${error.message}`);
     }
   }
 
